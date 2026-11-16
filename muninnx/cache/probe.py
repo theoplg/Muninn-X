@@ -1,4 +1,4 @@
-"""Cheap probe features F_k = Psi(x_k, t_k).   >>> YOU IMPLEMENT THIS (GUIDE.md, step 3) <<<
+"""Cheap probe features F_k = Psi(x_k, t_k).  
 
 The paper runs only a short prefix of the network ("Stem-1") and pools it.
 For VelocityMLP the prefix is `model.stem(model.embed_input(x, t))`.
@@ -14,5 +14,5 @@ def probe_features(model, x, t):
 
     Must be MUCH cheaper than model(x, t): only run the stem.
     """
-    # TODO(you)
-    raise NotImplementedError
+    stem1 = model.stem(model.embed_input(x,t))
+    return stem1

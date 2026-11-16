@@ -1,4 +1,4 @@
-"""Explicit Euler solver for flow matching.   >>> YOU IMPLEMENT THIS (GUIDE.md, step 2) <<<"""
+"""Explicit Euler solver for flow matching."""
 from .base import Solver
 
 
@@ -15,15 +15,13 @@ class EulerSolver(Solver):
         Returns:
             x_{k+1}, same shape as x.
         """
-        # TODO(you)
-        raise NotImplementedError
+        return x + self.dt(k)*v
 
     def coeffs(self, k):
         """Lipschitz constants (K_k, Lp_k) of Phi_k(x, v) = x + dt_k * v.
-
-        Hint: differentiate Phi_k w.r.t. x and w.r.t. v. Both are constants here.
         Returns:
             (K_k, Lp_k) as python floats.
         """
-        # TODO(you)
-        raise NotImplementedError
+        K_k = 1 
+        Lp_k = abs(self.dt(k))
+        return (float(K_k), float(Lp_k))

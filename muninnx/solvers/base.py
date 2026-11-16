@@ -27,6 +27,7 @@ class Solver:
         """Return x_{k+1} = Phi_k(x_k, v)."""
         raise NotImplementedError
 
+
     def coeffs(self, k):
-        """Return (K_k, Lp_k) for step k (see module docstring)."""
+        """Return (K_k, Lp_k) for step k."""
         raise NotImplementedError
