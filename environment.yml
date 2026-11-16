@@ -1,0 +1,16 @@
+name: muninnx
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      # For RTX 50xx (Blackwell) use a CUDA >= 12.8 build:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch
+      - numpy
+      - matplotlib
+      - pyyaml
+      - scikit-learn
+      - pytest
+      - -e .
