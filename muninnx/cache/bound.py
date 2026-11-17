@@ -15,5 +15,27 @@ def sensitivity_weights(solver):
 
     Sanity check: for Euler on a uniform grid every L_k equals dt.
     """
-    # TODO(you)
-    raise NotImplementedError
+    Ks = []
+    Lps = []
+    for k in range(solver.n_steps-1):
+        K_k, Lp_k = solver.coeffs(k)
+        Ks.append(K_k)
+        Lps.append(Lp_k)
+
+    cumul = [1 for k in range(solver.n_steps-1)]
+
+    cumul[-1] = Ks[-1]
+    
+    for j in range(solver.n_steps-2):
+        k = solver.n_steps-1 - j
+        cumul[k] = cumul[k+1]*Ks[k]
+
+    L_k = torch.array(Lps) * torch.array(cumul)
+
+    return L_k
+
+    
+
+        
+        
+

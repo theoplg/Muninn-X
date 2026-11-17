@@ -13,8 +13,14 @@ def trajectory_distance(a, b):
     Shapes: (B, D) for toys (treat H = 1) or (B, H, D) for trajectories.
     Returns (B,).
     """
-    # TODO(you)
-    raise NotImplementedError
+    if a.ndim == 2:
+        return torch.linalg.norm(a - b, dim=-1)  # (B,)
+    elif a.ndim == 3:
+        H = a.shape[1]
+        return torch.linalg.norm(a - b, dim=(-2, -1)) / math.sqrt(H)  # (B,)
+    else:
+        raise ValueError(f"Expected 2D or 3D tensors, got {a.ndim}D.")
+
 
 
 def wilson_ci(k, n, z=1.96):
@@ -40,5 +46,23 @@ def summarize(d, eta, nfe, n_steps):
         "E_d", "p_viol" (= fraction d > eta), "p_viol_ci" (wilson_ci), "nfe_mean",
         "speedup_nfe" (= n_steps / nfe_mean)
     """
-    # TODO(you)
-    raise NotImplementedError
+    E_d = torch.mean(d,dim=0)
+
+    indicator = (d > eta ).float()
+
+    k = torch.sum(indicator)
+    B = d.shape[0]
+
+    p_viol = k/B
+    p_viol_ci = wilson_ci(k,B)
+
+    nfe_mean = torch.mean(nfe.float())
+    speedup = n_steps/nfe_mean
+
+    return {
+            "E_d": E_d,
+            "p_viol": p_viol,
+            "p_viol_ci": p_viol_ci,
+            "nfe_mean": nfe_mean,
+             "speedup_nfe": speedup
+            }

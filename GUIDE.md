@@ -19,9 +19,9 @@ pytest -q tests/test_1_fm_loss.py        # run one step's tests at a time
 - **Time runs from noise to data**: x₀ ~ N(0, I) at t = 0, data at t = 1. The paper's
   diffusion time runs backwards, so its "t+1" is our "k−1" (the previous step).
 - **Grid**: `solver.ts[0..N]`. Step `k` maps x_k → x_{k+1} using the velocity at (x_k, ts[k]).
-- **One step as a map**: x_{k+1} = Φ_k(x_k, v). Its Lipschitz constants are
-  ‖Φ_k(x,v) − Φ_k(x',v')‖ ≤ K_k‖x−x'‖ + L'_k‖v−v'‖ (the paper's Assumption 1).
-- **Distance**: d(a,b) = ‖a−b‖_F/√H, so Γ = 1/√H. For the 2D toy, H = 1 and Γ = 1.
+- **One step as a map**:$ x_{k+1} = Φ_k(x_k, v)$. Its Lipschitz constants are
+  $‖Φ_k(x,v) − Φ_k(x',v')‖ ≤ K_k‖x−x'‖ + L'_k‖v−v'‖$ (the paper's Assumption 1).
+- **Distance**: d(a,b) = ‖a−b‖_F/√H, so $Γ = 1/√H$. For the 2D toy, H = 1 and Γ = 1.
 
 ---
 
