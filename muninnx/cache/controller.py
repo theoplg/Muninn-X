@@ -6,6 +6,11 @@ from dataclasses import dataclass
 
 import torch
 
+from muninnx.cache.probe import probe_features
+from muninnx.cache.score import relative_l1_score
+from muninnx.cache.bound import sensitivity_weights
+
+
 
 @dataclass
 class MuninnConfig:
@@ -56,5 +61,61 @@ def muninn_sample(model, solver, x0, bound, cfg):
             "bound_used":  (B,) float  sum of c_hat over reused steps  (= eta - budget)
             "budget_left": (B,) float  budget at the end (must be >= 0)
     """
-    # TODO(you)
-    raise NotImplementedError
+    N = solver.n_steps
+    T_cache = set(cache_steps(N, cfg))
+
+    x=x0
+    B = x0.shape[0]
+    L = sensitivity_weights(solver)                  # (N,) from muninnx.cache.bound
+    budget = torch.full((B,), cfg.eta, device=x0.device)
+    lag    = torch.zeros(B, dtype=torch.long, device=x0.device)
+    nfe    = torch.zeros(B, dtype=torch.long, device=x0.device)
+    reused = torch.zeros(N, B, dtype=torch.bool, device=x0.device)
+    
+    for k in range(N):
+        t = solver.t(k)
+        f_k = probe_features(model,x,t)
+
+        if k == 0:
+            # first step: allocate the caches (every row recomputes below anyway)
+            v_cache = model(x, t)
+            f_cache = f_k.clone()
+            nfe+=1
+            x = solver.step(x,v_cache,k)
+            continue
+
+        if k in T_cache:
+            # reuse is allowed here -> decide per row
+            s = relative_l1_score(f_k, f_cache, cfg.omega)
+            c_hat = cfg.gamma * L[k] * bound(s)
+            reuse = (c_hat <= budget ) & (lag < cfg.max_lag)
+            rec = ~reuse
+
+        else: 
+            # forbidden step (prefix/suffix): everyone recomputes
+            rec = torch.ones(B, dtype=torch.bool, device=x.device)
+            c_hat = torch.zeros(B, device = x.device)
+
+        # recompute rows (skip the network call if every row reuses)
+        if rec.any():
+            v_cache[rec] = model(x[rec], t)
+            f_cache[rec] = f_k[rec]
+            lag[rec] = 0
+            nfe[rec] += 1
+
+        # reused rows: pay the predicted cost out of each row's own budget
+        reuse = ~rec
+        budget[reuse] -= c_hat[reuse]
+        lag[reuse] += 1
+        reused[k] = reuse
+
+        x = solver.step(x, v_cache, k)
+
+    info = {
+        "nfe": nfe,
+        "reused": reused,
+        "bound_used": cfg.eta - budget,
+        "budget_left": budget,
+    }
+    return x, info
+

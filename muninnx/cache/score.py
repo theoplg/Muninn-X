@@ -9,5 +9,6 @@ import torch
 
 def relative_l1_score(f_cur, f_prev, omega=1e-3):
     """f_cur, f_prev: (B, D) probe features. Returns (B,) scores, >= 0."""
-    # TODO(you)
-    raise NotImplementedError
+    num = torch.linalg.norm(f_cur-f_prev,ord=1,dim=1)
+    denom = torch.linalg.norm(f_prev,ord=1,dim=1) + omega
+    return num/denom

@@ -15,24 +15,14 @@ def sensitivity_weights(solver):
 
     Sanity check: for Euler on a uniform grid every L_k equals dt.
     """
-    Ks = []
-    Lps = []
-    for k in range(solver.n_steps-1):
+    N = solver.n_steps
+    Ls = [0.0] * N
+    prod = 1.0  # prod_{j=k+1}^{N-1} K_j, empty product (=1) at k = N-1
+    for k in reversed(range(N)):
         K_k, Lp_k = solver.coeffs(k)
-        Ks.append(K_k)
-        Lps.append(Lp_k)
-
-    cumul = [1 for k in range(solver.n_steps-1)]
-
-    cumul[-1] = Ks[-1]
-    
-    for j in range(solver.n_steps-2):
-        k = solver.n_steps-1 - j
-        cumul[k] = cumul[k+1]*Ks[k]
-
-    L_k = torch.array(Lps) * torch.array(cumul)
-
-    return L_k
+        Ls[k] = Lp_k * prod
+        prod *= K_k  # now covers j >= k, i.e. the product needed for step k-1
+    return torch.tensor(Ls, dtype=torch.float32)
 
     
 

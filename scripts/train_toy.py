@@ -28,6 +28,7 @@ def main():
 
     seed_all(args.seed)
     device = get_device(args.device)
+    torch.set_float32_matmul_precision("high")  # TF32 matmuls for training throughput
     model_cfg = dict(dim=2, hidden=args.hidden, depth=args.depth)
     model = VelocityMLP(**model_cfg).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -35,7 +36,7 @@ def main():
 
     t0 = time.time()
     for it in range(1, args.iters + 1):
-        x1 = sample_toy(args.dataset, args.batch).to(device)
+        x1 = sample_toy(args.dataset, args.batch, device=device)  # generated on the GPU
         loss = fm_loss(model, x1)
         opt.zero_grad(set_to_none=True)
         loss.backward()

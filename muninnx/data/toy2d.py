@@ -24,11 +24,12 @@ def moons(n, noise=0.1, generator=None):
     return x[torch.randperm(n, generator=generator)]
 
 
-def checkerboard(n, generator=None):
-    x1 = 8 * torch.rand(n, generator=generator) - 4
-    x2_ = 2 * torch.rand(n, generator=generator) - 2 + 2 * torch.randint(0, 2, (n,), generator=generator)
-    x2 = x2_ + (torch.floor(x1 / 2) % 2) * 2 - 2
-    return torch.stack([x1, x2 + 1], dim=1)
+def checkerboard(n, scale=2.0, generator=None):
+    """4x4 checkerboard on [-4, 4]^2 (FFJORD version, scaled): 8 filled squares of side 2."""
+    x1 = 4 * torch.rand(n, generator=generator) - 2                     # column in [-2, 2)
+    x2_ = torch.rand(n, generator=generator) - 2 * torch.randint(0, 2, (n,), generator=generator).float()
+    x2 = x2_ + (torch.floor(x1) % 2)                                     # shift odd columns by one cell
+    return scale * torch.stack([x1, x2], dim=1)
 
 
 DATASETS = {
@@ -38,7 +39,12 @@ DATASETS = {
 }
 
 
-def sample_toy(name, n, generator=None):
+def sample_toy(name, n, generator=None, device=None):
+    """Sample n points. With `device` (and no generator) the points are generated directly on it."""
     if name not in DATASETS:
         raise KeyError(f"unknown toy dataset {name!r}; choose from {list(DATASETS)}")
-    return DATASETS[name](n, generator=generator)
+    if device is not None and generator is None:
+        with torch.device(device):
+            return DATASETS[name](n)
+    x = DATASETS[name](n, generator=generator)
+    return x if device is None else x.to(device)

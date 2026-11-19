@@ -46,23 +46,15 @@ def summarize(d, eta, nfe, n_steps):
         "E_d", "p_viol" (= fraction d > eta), "p_viol_ci" (wilson_ci), "nfe_mean",
         "speedup_nfe" (= n_steps / nfe_mean)
     """
-    E_d = torch.mean(d,dim=0)
-
-    indicator = (d > eta ).float()
-
-    k = torch.sum(indicator)
-    B = d.shape[0]
-
-    p_viol = k/B
-    p_viol_ci = wilson_ci(k,B)
-
-    nfe_mean = torch.mean(nfe.float())
-    speedup = n_steps/nfe_mean
+    d = d.detach().float().cpu()
+    B = d.numel()
+    k = int((d > eta).sum())          # number of violations
+    nfe_mean = float(nfe.float().mean())
 
     return {
-            "E_d": E_d,
-            "p_viol": p_viol,
-            "p_viol_ci": p_viol_ci,
-            "nfe_mean": nfe_mean,
-             "speedup_nfe": speedup
-            }
+        "E_d": float(d.mean()),
+        "p_viol": k / B,
+        "p_viol_ci": wilson_ci(k, B),
+        "nfe_mean": nfe_mean,
+        "speedup_nfe": n_steps / nfe_mean,
+    }

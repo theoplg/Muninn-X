@@ -1,6 +1,5 @@
 """Calibration: collect (score, reuse-error) pairs and build a conformal upper bound U(s).
 
->>> YOU IMPLEMENT THIS (GUIDE.md, step 5) <<<
 
 Paper Sec. IV-C, adapted (staleness-aware; see GUIDE.md "Finding 1" for why):
   1. Run N_cal full chains from fresh noise, storing probe features F_k and velocities v_k
@@ -13,7 +12,12 @@ Paper Sec. IV-C, adapted (staleness-aware; see GUIDE.md "Finding 1" for why):
      q = the ceil((n+1)(1-alpha_step))-th smallest residual (q = +inf if that rank > n).
   4. U(s) = max(m(s) + q, 0).  Then P(eps <= U(s)) >= 1 - alpha_step under exchangeability.
 """
+import math
+
 import torch
+from muninnx.cache.probe import probe_features
+from muninnx.cache.score import relative_l1_score
+
 
 
 @torch.no_grad()
@@ -36,8 +40,33 @@ def collect_calibration_pairs(model, solver, x0, steps, max_lag=10, omega=1e-3):
     Hints: muninnx.cache.probe.probe_features, muninnx.cache.score.relative_l1_score.
     Storing all F_k and v_k for the whole chain is fine at this scale.
     """
-    # TODO(you)
-    raise NotImplementedError
+    # 1. full-compute chains: store probe features and velocities at every step
+    F, V = [], []
+    x = x0
+    for k in range(solver.n_steps):
+        t = solver.t(k)
+        F.append(probe_features(model, x, t))
+        V.append(model(x, t))
+        x = solver.step(x, V[k], k)
+
+    # 2. one (s, eps) pair per chain, cacheable step k and lag l = 1..max_lag (k - l >= 0)
+    S, E, Ks, Ls = [], [], [], []
+    n = x0.shape[0]
+    for k in steps:
+        for l in range(1, min(max_lag, k) + 1):
+            S.append(relative_l1_score(F[k], F[k - l], omega))
+            E.append((V[k] - V[k - l]).flatten(1).norm(dim=1))
+            Ks.append(torch.full((n,), k, dtype=torch.long))
+            Ls.append(torch.full((n,), l, dtype=torch.long))
+
+    # 3. flatten into 1-D CPU tensors
+    return {
+        "s": torch.cat(S).cpu(),
+        "eps": torch.cat(E).cpu(),
+        "k": torch.cat(Ks),
+        "lag": torch.cat(Ls),
+    }
+
 
 
 class ConformalUpperBound:
@@ -52,10 +81,32 @@ class ConformalUpperBound:
 
         Returns self.
         """
-        # TODO(you)
-        raise NotImplementedError
+        s = s.detach().flatten().double().cpu()
+        eps = eps.detach().flatten().double().cpu()
+        n = s.numel()
+
+        # 1. random split: train (fit m) / held-out (conformal quantile), disjoint
+        g = torch.Generator().manual_seed(seed)
+        perm = torch.randperm(n, generator=g)
+        n_train = int(train_frac * n)
+        tr, cal = perm[:n_train], perm[n_train:]
+
+        # 2. OLS fit eps ~ a*s + b on the train split
+        X = torch.stack([s[tr], torch.ones_like(s[tr])], dim=1)       # (n_train, 2)
+        sol = torch.linalg.lstsq(X, eps[tr].unsqueeze(1)).solution    # (2, 1)
+        a, b = sol[0, 0].item(), sol[1, 0].item()
+
+        # 3. split-conformal quantile of the signed residuals on the held-out split
+        r = eps[cal] - (a * s[cal] + b)
+        n_cal = r.numel()
+        rank = math.ceil((n_cal + 1) * (1 - alpha_step))
+        q = math.inf if rank > n_cal else r.sort().values[rank - 1].item()
+
+        self.coef = (a, b)
+        self.q = q
+        return self
 
     def __call__(self, s):
         """Upper bound U(s) for a tensor of scores s (any shape)."""
-        # TODO(you)
-        raise NotImplementedError
+        a, b = self.coef
+        return (a * s + b + self.q).clamp_min(0.0)
