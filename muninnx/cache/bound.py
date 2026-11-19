@@ -17,20 +17,19 @@ def sensitivity_weights(solver):
     """
     Ks = []
     Lps = []
-    for k in range(solver.n_steps-1):
+    for k in range(solver.n_steps):
         K_k, Lp_k = solver.coeffs(k)
         Ks.append(K_k)
         Lps.append(Lp_k)
 
-    cumul = [1 for k in range(solver.n_steps-1)]
+    cumul = [1 for k in range(solver.n_steps)]
 
     cumul[-1] = Ks[-1]
     
-    for j in range(solver.n_steps-2):
-        k = solver.n_steps-1 - j
-        cumul[k] = cumul[k+1]*Ks[k]
+    for k in range(solver.n_steps - 2, -1, -1):   
+        cumul[k] = cumul[k + 1] * Ks[k + 1]
 
-    L_k = torch.array(Lps) * torch.array(cumul)
+    L_k = torch.tensor(Lps, dtype=torch.float32) * torch.tensor(cumul, dtype=torch.float32)
 
     return L_k
 
