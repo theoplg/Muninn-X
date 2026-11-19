@@ -1,15 +1,12 @@
 """Muninn controller = paper Algorithm 1, for flow matching (staleness-aware).
-
->>> YOU IMPLEMENT `muninn_sample` (GUIDE.md, step 6) <<<
 """
 from dataclasses import dataclass
 
 import torch
 
-from muninnx.cache.probe import probe_features
-from muninnx.cache.score import relative_l1_score
-from muninnx.cache.bound import sensitivity_weights
-
+from .bound import sensitivity_weights
+from .probe import probe_features
+from .score import relative_l1_score
 
 
 @dataclass
@@ -39,8 +36,8 @@ def muninn_sample(model, solver, x0, bound, cfg):
         step where v_cache was computed,  lag (B,) = steps since the last recompute.
 
     For each step k = 0..N-1:
-      1. f_k = probe(x_k, t_k)
-      2. if k in T_cache:  s = score(f_k, f_cache),  c_hat = cfg.gamma * L_k * bound(s)
+      1. F_k = probe(x_k, t_k)
+      2. if k in T_cache:  s = score(F_k, F_cache),  c_hat = cfg.gamma * L_k * bound(s)
          reuse = (c_hat <= budget) & (lag < cfg.max_lag)            [else: reuse = False]
       3. recompute rows: v_cache = model(x, t_k), f_cache = f_k, lag = 0
          reused rows:    budget -= c_hat, lag += 1
@@ -62,60 +59,59 @@ def muninn_sample(model, solver, x0, bound, cfg):
             "budget_left": (B,) float  budget at the end (must be >= 0)
     """
     N = solver.n_steps
-    T_cache = set(cache_steps(N, cfg))
-
-    x=x0
     B = x0.shape[0]
-    L = sensitivity_weights(solver)                  # (N,) from muninnx.cache.bound
-    budget = torch.full((B,), cfg.eta, device=x0.device)
-    lag    = torch.zeros(B, dtype=torch.long, device=x0.device)
-    nfe    = torch.zeros(B, dtype=torch.long, device=x0.device)
-    reused = torch.zeros(N, B, dtype=torch.bool, device=x0.device)
-    
+    dev = x0.device
+    T_cache = set(cache_steps(N, cfg))
+    L = sensitivity_weights(solver).to(dev)
+
+    x = x0
+    budget = torch.full((B,), float(cfg.eta), device=dev)
+    v_cache = torch.zeros_like(x0)
+    f_cache = None                                   # filled at k = 0 (always a recompute)
+    lag = torch.zeros(B, dtype=torch.long, device=dev)
+    nfe = torch.zeros(B, dtype=torch.long, device=dev)
+    reused = torch.zeros(N, B, dtype=torch.bool, device=dev)
+    bound_used = torch.zeros(B, device=dev)
+
     for k in range(N):
         t = solver.t(k)
-        f_k = probe_features(model,x,t)
+        # 1. probe at every step, before deciding
+        f_k = probe_features(model, x, t)
 
-        if k == 0:
-            # first step: allocate the caches (every row recomputes below anyway)
-            v_cache = model(x, t)
-            f_cache = f_k.clone()
-            nfe+=1
-            x = solver.step(x,v_cache,k)
-            continue
-
+        # 2. decide per sample
         if k in T_cache:
-            # reuse is allowed here -> decide per row
+            # compare with the features at the LAST RECOMPUTE (staleness-aware), not F_{k-1}
             s = relative_l1_score(f_k, f_cache, cfg.omega)
-            c_hat = cfg.gamma * L[k] * bound(s)
-            reuse = (c_hat <= budget ) & (lag < cfg.max_lag)
-            rec = ~reuse
+            c_hat = cfg.gamma * L[k] * bound(s).to(budget)
+            reuse = (c_hat <= budget) & (lag < cfg.max_lag)
+        else:
+            c_hat = torch.zeros(B, device=dev)
+            reuse = torch.zeros(B, dtype=torch.bool, device=dev)
+        rec = ~reuse
 
-        else: 
-            # forbidden step (prefix/suffix): everyone recomputes
-            rec = torch.ones(B, dtype=torch.bool, device=x.device)
-            c_hat = torch.zeros(B, device = x.device)
-
-        # recompute rows (skip the network call if every row reuses)
-        if rec.any():
+        # 3a. recompute rows: fresh velocity, refresh cache
+        if rec.all():
+            v_cache = model(x, t)                    # full batch: bit-exact with sample_full
+            f_cache = f_k.clone()
+        elif rec.any():
             v_cache[rec] = model(x[rec], t)
             f_cache[rec] = f_k[rec]
-            lag[rec] = 0
-            nfe[rec] += 1
+        lag[rec] = 0
+        nfe[rec] += 1
 
-        # reused rows: pay the predicted cost out of each row's own budget
-        reuse = ~rec
+        # 3b. reused rows: pay c_hat from the budget
         budget[reuse] -= c_hat[reuse]
+        bound_used[reuse] += c_hat[reuse]
         lag[reuse] += 1
         reused[k] = reuse
 
+        # 4. solver step with fresh-or-cached velocity
         x = solver.step(x, v_cache, k)
 
     info = {
         "nfe": nfe,
         "reused": reused,
-        "bound_used": cfg.eta - budget,
+        "bound_used": bound_used,
         "budget_left": budget,
     }
     return x, info
-
