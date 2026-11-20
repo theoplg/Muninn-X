@@ -26,10 +26,26 @@ Running log of experiments: setup, results and interpretation. `runs/` is gitign
    very conservative (pooled linear fit + α_step = α/90 tail quantile).
 5. **Staleness-aware design (Finding 1 in GUIDE) reproduces.** Our E0 numbers on 8gaussians match
    the GUIDE's staleness-aware row.
+6. **Certified FewSteps is valid and much cheaper** (E4). Choosing a uniform step count N' by
+   conformal / LTT calibration on the final d gives p_viol ≤ α everywhere, with 1.1–17× fewer
+   NFE than Muninn at the same (η, α). It is the baseline any adaptive method must beat.
+7. **Reusing x̂₁ instead of v changes nothing** (E5). With Euler on straight FM paths, reusing
+   any fixed prediction (v, x̂₁, x̂₀) for l steps is exactly one Euler step of size l·Δ
+   (verified to 4e-14). The GUIDE's "x̂₁ reuse contracts errors" ablation is a no-op.
+8. **Extrapolating beats reusing by ~10×, but uniform AB2 still wins** (E6). An oracle that linearly
+   extrapolates from the last two computed velocities reaches, at 18 NFE, a sample error lower
+   than full Euler-100 (vs the exact ODE). But uniform AB2 FewSteps gets the same gain with no
+   adaptivity: 3–8× lower error than the extrapolation oracle at matched NFE. The gain comes from
+   **higher-order integration, not from per-sample adaptivity**.
+9. **The certificate target matters.** Euler-100 itself is 0.039 (checkerboard) / 0.023
+   (8gaussians) away from the exact ODE solution. AB2 with 15–20 NFE is closer to the exact
+   solution than Euler-100 is. Certifying closeness to Euler-100 penalises better solvers.
 
-**Implication.** Two separate problems: (a) *validity*, so the sensitivity weights must account
-for the flow's amplification, or calibration must target the final d directly; (b) *usefulness*,
-so we must change what is reused (x̂₁, Heun stage) rather than tune the score / bound.
+**Implication.** (a) *Validity*: the sensitivity weights must account for the flow's
+amplification, or calibration must target the final d directly (CertFew already does).
+(b) *Usefulness*: on these toys, per-sample adaptivity has shown no value at all. Every gain so far
+came from the integration scheme, and a uniform grid captures it. (c) *Target*: the reference
+for d should be a near-exact ODE solution, not Euler-100.
 
 ---
 
@@ -189,28 +205,170 @@ measure G_k = ‖Δx_N‖ / ‖δ‖. The Euler bound assumes G_k ≡ 1.
 - It explains both the oracle's failure (E2) and why Muninn's validity degrades on the target
   with sharper mode boundaries (checkerboard).
 
+### E4 — Certified FewSteps (2026-11-19)
+```bash
+python scripts/certified_fewsteps.py --ckpt runs/toy_checkerboard/model.pt   # n_cal 4000, n_test 50000
+python scripts/certified_fewsteps.py --ckpt runs/toy_8gaussians/model.pt
+```
+**Method** (`muninnx/baselines/fewsteps.py`). On the same 4000 calibration chains Muninn uses,
+compute d(N') = ‖x_N^full − x_{N'}^Euler‖ for every N' = 1..100. Choose N' by **fixed-sequence
+testing**: go down from N' = N and stop at the first N' that fails the test of
+"P(d > η) ≤ α" (no multiple-testing correction needed). Two tests, with k violations out of n:
+- **conformal**: (k+1)/(n+1) ≤ α. Marginal guarantee, the same kind Muninn claims.
+- **LTT**: binomial p-value P(Binom(n, α) ≤ k) ≤ δ = 0.05. PAC guarantee: with prob ≥ 95% over
+  calibration, P(d > η) ≤ α.
+
+The cost is one calibration pass (Σ N' ≈ 5000 evaluations per chain, offline). At sampling time
+it is plain Euler with N' steps: no probe, no controller.
+
+**Checkerboard, α = 0.05** (test p_viol, n = 50k)
+
+| η | Muninn NFE | Muninn E[d] | Muninn p_viol | CertFew (conf.) N' | E[d] | p_viol | CertFew (LTT) N' | p_viol | NFE ratio Muninn / CertFew |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.01 | 100 | 0 | 0 | 90 | 0.0049 | 0.040 | 92 | 0.023 | 1.1× |
+| 0.05 | 97.0 | 0.0085 | 0.008 | 60 | 0.0261 | 0.046 | 61 | 0.043 | 1.6× |
+| 0.1 | 94.0 | 0.0310 | 0.020 | 43 | 0.0512 | 0.045 | 44 | 0.042 | 2.2× |
+| 0.15 | 91.0 | 0.0691 | 0.041 | 34 | 0.0748 | 0.046 | 35 | 0.042 | 2.7× |
+| 0.3 | 81.9 | 0.1515 | **0.059** | 22 | 0.1358 | 0.045 | 23 | 0.042 | 3.7× |
+| 0.5 | 70.2 | 0.2682 | **0.083** | 16 | 0.2017 | 0.045 | 17 | 0.039 | 4.4× |
+| 1.0 | 41.2 | 0.3544 | 0.038 | 9 | 0.3813 | 0.045 | 10 | 0.035 | 4.6× |
+
+**8gaussians, α = 0.05**
+
+| η | Muninn NFE | Muninn p_viol | CertFew (conf.) N' | p_viol | CertFew (LTT) N' | p_viol | NFE ratio |
+|---|---|---|---|---|---|---|---|
+| 0.02 | 99.0 | 0.0002 | 92 | 0.012 | 92 | 0.012 | 1.1× |
+| 0.05 | 97.7 | 0.0003 | 46 | 0.013 | 90 | 0.040 | 2.1× (conf.) / 1.1× (LTT) |
+| 0.1 | 95.0 | 0.0006 | 26 | 0.011 | 26 | 0.011 | 3.7× |
+| 0.3 | 85.2 | 0.0001 | 10 | 0.020 | 10 | 0.020 | 8.5× |
+| 1.0 | 51.5 | 0 | 3 | 0.034 | 3 | 0.034 | 17× |
+
+α = 0.10 tables are in `results.json`. Same picture: CertFew is valid everywhere (test p_viol
+≤ α in all 32 rows) and needs 1.1–17× fewer NFE than Muninn.
+
+**Interpretation**
+- **CertFew dominates Muninn on every axis that matters.** It is valid (Muninn is not, on
+  checkerboard), needs far fewer NFE for the same (η, α), and has no probe cost. The certificate
+  is simple, end-to-end and makes no Lipschitz assumption, so it is immune to the amplification
+  problem from E3.
+- **CertFew is tight, Muninn is loose.** CertFew's test p_viol sits just below α (0.035–0.046),
+  meaning it spends its risk budget. Muninn's p_viol is often 10–100× below α while still using
+  most of the NFE. Its E[d] is smaller at the same η, but that is not what the guarantee asks for.
+- **Non-monotone d(N') hurts fixed-sequence testing.** On 8gaussians, E[d] is slightly *larger*
+  at N' = 90 than at N' = 80 (see E2 FewSteps curve), so at η = 0.05 the LTT test fails at
+  N' = 89 and stops (N' = 90) while the conformal test passes through (N' = 46). A fix would be
+  to test in an order that is not N, N−1, …, e.g. by error estimated on a separate split.
+- **This is now the baseline to beat.** Any adaptive method must offer the same (η, α)
+  guarantee at a lower NFE than CertFew, not just than uniform Euler at matched NFE.
+- Caveat: the guarantee is per (η, α) and per model. CertFew needs a calibration pass for each
+  new tolerance, but that is cheap and offline, like Muninn's.
+
+### E5 — x̂₁ reuse ≡ v reuse (2026-11-19, analysis + numerical check)
+```bash
+python scripts/check_x1hat_equivalence.py --ckpt runs/toy_checkerboard/model.pt
+```
+**Claim (GUIDE).** Reusing the predicted endpoint x̂₁ = x + (1−t)v gives the step
+Φ(x) = x + Δ(x̂₁ − x)/(1−t) with K = 1 − Δ/(1−t) < 1, so errors contract.
+
+**Result.** For a fixed x̂₁, Euler on dx/dt = (x̂₁ − x)/(1−t) scales the distance to x̂₁ by
+exactly (1−t_{k+1})/(1−t_k) per step, which telescopes:
+x_k = x̂₁ + (x_j − x̂₁)(1−t_k)/(1−t_j) = x_j + (t_k − t_j)·v_j.
+That is one big Euler step with the old velocity, i.e. exactly what v-reuse produces. The
+contraction K < 1 is cancelled by the larger sensitivity L' = Δ/(1−t). The same holds for x̂₀ reuse.
+Numerically, the same random reuse pattern (20k samples, float64) gives final samples that differ
+by at most **4.0e-14** (sample norm ≈ 2.9).
+
+**Consequence.** With Euler on straight FM paths, *any* "copy a cached prediction" scheme is a
+non-uniform Euler schedule. Changing the parametrisation only changes the units of the
+score / U(s), so it changes Muninn's decisions but cannot beat the E2 oracle. E7 as originally
+planned is dropped. To gain anything, the cache must be **combined with new information**
+(extrapolation, multistep, Heun stages): see E6.
+
+### E6 — Oracle extrapolation vs higher-order FewSteps (2026-11-19)
+```bash
+python scripts/extrap_oracle_toy.py --ckpt runs/toy_checkerboard/model.pt   # n_test 50000, RK4-400 reference
+python scripts/extrap_oracle_toy.py --ckpt runs/toy_8gaussians/model.pt
+```
+**Question.** Does adaptive *extrapolation* (forecast v from the last two computed velocities)
+beat FewSteps, where adaptive *reuse* failed?
+
+**Methods** (`muninnx/cache/oracle.py::oracle_extrap_sample`, `muninnx/baselines/fewsteps.py`)
+- Oracle extrapolate: at a cacheable step, the candidate is
+  v_ext = v_b + (t_k − t_b)(v_b − v_a)/(t_b − t_a) from the last two *computed* velocities. It is
+  used iff Δ·‖v(x_k) − v_ext‖ ≤ budget and lag < max_lag. Same greedy budget rule as E2. The step is
+  the Euler step of the reference grid. Variants: max_lag = 10 and no lag cap.
+- Oracle reuse: E2 oracle, for reference.
+- FewSteps Euler / AB2 (1 NFE/step, first step Euler) / Heun (2 NFE/step), uniform grids.
+- **Two references**: the full Euler-100 chain (Muninn's certificate target) and the near-exact
+  ODE solution (RK4, 400 steps). Euler-100 is itself 0.0386 (checkerboard) / 0.0232 (8gaussians)
+  away from exact in E[d].
+
+Plot: `runs/toy_*/extrap_oracle/pareto.png` (left: vs Euler-100, right: vs exact).
+
+**Checkerboard**, E[d] vs exact ODE (vs Euler-100 in brackets)
+
+| NFE | FewSteps Euler | FewSteps AB2 | FewSteps Heun | Oracle reuse | Oracle extrapolate (lag 10) |
+|---|---|---|---|---|---|
+| ~10 | 0.379 | **0.035** | 0.093 | — | — |
+| ~18–20 | 0.192 | **0.009** | 0.020 | 0.395 (0.357) @18 | 0.029 (0.045) @18 |
+| ~22 | — | — | — | 0.392 (0.355) | 0.030 (0.045) @22 |
+| ~47–50 | 0.077 | **0.002** | 0.003 | — | 0.038 (0.035) @47 |
+| ~67–70 | 0.055 | **0.001** | — | 0.244 (0.206) @69 | 0.060 (0.031) @67 |
+| 100 | 0.039 | **0.0004** | 0.002 | — | — |
+
+**8gaussians**, E[d] vs exact ODE
+
+| NFE | FewSteps Euler | FewSteps AB2 | FewSteps Heun | Oracle reuse | Oracle extrapolate (lag 10) |
+|---|---|---|---|---|---|
+| ~10 | 0.229 | **0.019** | 0.045 | — | — |
+| ~18–20 | 0.113 | **0.010** | 0.016 | 0.247 @18 | 0.082 @18 |
+| ~48–50 | 0.050 | **0.009** | 0.014 | — | 0.089 @48 |
+| ~70 | — | **0.005** | — | — | 0.075 @70 |
+
+**Interpretation**
+- **Extrapolation is a real improvement over reuse:** ~13× (checkerboard) / ~3× (8gaussians)
+  lower error than the reuse oracle at 18 NFE. On checkerboard, at 18 NFE it is closer to the
+  exact ODE than Euler-100 (0.029 vs 0.039).
+- **But it is a higher-order integrator in disguise.** At large η the budget never binds and the
+  oracle settles into a fixed pattern: recompute every 11 steps, extrapolate in between. That is
+  essentially AB2 with ~9 big steps, plus 10 NFE wasted on the forbidden prefix/suffix. Uniform
+  AB2 at 10 NFE gives the same error (0.035 vs 0.029).
+- **Uniform AB2 beats the adaptive oracle everywhere** that matters: 3× (checkerboard) and 8×
+  (8gaussians) lower error at ~18–20 NFE. The per-sample decisions add nothing on these toys.
+- **Without a lag cap, extrapolation diverges.** Linear extrapolation over long spans is unstable,
+  so the no-cap oracle is the worst method. The cap is what makes it a stable multistep scheme.
+- **More NFE can make the oracle *worse* vs exact.** At small η it recomputes more and tracks the
+  Euler-100 chain more closely, inheriting Euler-100's own error (0.039). This is the target
+  problem (finding 9) showing up directly.
+- **Vs the Euler-100 target**, AB2 and Heun plateau at ≈ 0.038 / 0.023: that is Euler-100's own
+  discretisation error, not an AB2 failure. A certificate against Euler-100 with η below that
+  value can only be met by tracking Euler's error.
+- Heun (2 NFE/step) is worse than AB2 at equal NFE on both toys.
+
 ---
 
 ## Open questions
 - Can the amplification be bounded *with high probability* (conformal on G_k) rather than in the
   worst case? The tail (max ~900×) suggests a per-step worst-case Lipschitz bound would be useless.
-- Does x̂₁ reuse (contracting step, K = 1 − Δ/(1−t)) also reduce the effect of the flow's
-  amplification, or only the injected error?
-- Is there a regime where adaptive reuse beats a **tuned non-uniform** grid, not just uniform
-  FewSteps? Per-sample adaptivity only helps if difficulty varies a lot *between samples*.
+- Is there *any* setting where per-sample adaptivity beats a uniform grid of the same order?
+  It needs difficulty to vary a lot **between samples** (not just over t, which a fixed
+  non-uniform grid captures). Candidates: Maze2D with branching paths, conditional generation.
+- Would adaptivity help on top of a higher-order base (e.g. adaptive AB2 / adaptive step size with
+  an embedded error estimate, as in classical ODE solvers)? That is classical adaptive step-size
+  control, so the novelty would be the certificate, not the speedup.
 - What does the paper's 2.7× speedup look like against FewSteps in *their* diffusion setting?
   The DDPM-style samplers there may have a weaker step-reduction baseline than FM + Euler.
 
 ## Next experiments (planned)
 | id | experiment | hypothesis / what it decides |
 |---|---|---|
-| E4 | **Certified FewSteps**: pick the smallest N' with a conformal guarantee P(d > η) ≤ α | Trivially valid. Probably the strongest certified baseline, and every adaptive method must beat it. |
-| E5 | **Fix validity, option A**: replace L_k = Δ by a conformal upper bound on the measured sensitivity Δ·G_k | Restores p_viol ≤ α on checkerboard. Cost: a much larger ĉ, so fewer reuses. |
-| E6 | **Fix validity, option B**: end-to-end calibration on the final d instead of per-step bounds | Avoids the triangle inequality and the amplification issue. Harder with adaptive decisions. |
-| E7 | **x̂₁ reuse** instead of v (Φ = x + Δ(x̂₁ − x)/(1−t)) | Contracting K < 1. Does the oracle then beat FewSteps? |
-| E8 | **Non-uniform FewSteps** baseline (e.g. more steps near t → 1 or where ε is large) | Is uniform even the right FewSteps reference? |
-| E9 | Ablations: literal paper rule (max_lag = 1, score vs F_{k−1}), per-lag U, forbid sizes | Completes GUIDE Finding 1 (a) and the M3 ablations. |
-| M1 | Maze2D | Only worth it once E4–E7 show a configuration that is both valid and useful. |
+| E7 | **Certified FewSteps with AB2, against the exact ODE** (E4 method, new reference) | The new bar. Expect far fewer NFE than certified Euler for the same (η, α). |
+| E8 | **Adaptive step size on an AB2 base** (embedded error estimate, certified end-to-end) | Last test of per-sample adaptivity on toys. Must beat E7 at equal (η, α). |
+| E9 | **Fix Muninn's validity**: conformal bound on the measured sensitivity Δ·G_k, or end-to-end calibration | Needed only if we keep the per-step certificate. Restores p_viol ≤ α on checkerboard. |
+| E10 | **Non-uniform FewSteps** grid (more steps where E[ε] is large) | Captures time-dependent difficulty without per-sample decisions. |
+| E11 | Ablations: literal paper rule (max_lag = 1, score vs F_{k−1}), per-lag U, forbid sizes | Completes GUIDE Finding 1 (a) and the M3 ablations. |
+| M1 | Maze2D | The place where per-sample difficulty may actually vary. Worth it if E8 shows any adaptive gain, or as the final real-data check. |
+| — | ~~x̂₁ reuse~~ | Dropped: provably identical to v reuse with Euler (E5). |
 
 ## Changelog of code affecting results
 - 2026-11-18 `toy2d.checkerboard` fixed (was a staircase). E1 is invalidated; E2/E3 use the fixed target.

@@ -49,3 +49,59 @@ def oracle_sample(model, solver, x0, cfg):
         x = solver.step(x, v_cache, k)
 
     return x, {"nfe": nfe, "reused": reused, "bound_used": cfg.eta - budget, "budget_left": budget}
+
+
+@torch.no_grad()
+def oracle_extrap_sample(model, solver, x0, cfg):
+    """Oracle with linear EXTRAPOLATION instead of plain reuse.
+
+    Keeps the last two computed velocities (t_a, v_a), (t_b, v_b) per sample. At a cacheable step
+    the candidate is v_ext = v_b + (t_k - t_b) (v_b - v_a) / (t_b - t_a). It is used iff
+    gamma * L_k * ||v(x_k) - v_ext|| <= budget and fewer than max_lag consecutive non-recomputes.
+    The step is always the Euler step of the reference chain: x_{k+1} = x_k + dt_k * v_used.
+    """
+    N = solver.n_steps
+    T_cache = set(cache_steps(N, cfg))
+    L = sensitivity_weights(solver).tolist()
+    B, dev = x0.shape[0], x0.device
+    col = lambda m: m.view(-1, *[1] * (x0.ndim - 1))
+
+    x = x0
+    budget = torch.full((B,), float(cfg.eta), device=dev)
+    lag = torch.zeros(B, dtype=torch.long, device=dev)
+    nfe = torch.zeros(B, dtype=torch.long, device=dev)
+    reused = torch.zeros(N, B, dtype=torch.bool, device=dev)
+    t_a = t_b = v_a = v_b = None
+
+    for k in range(N):
+        t = solver.t(k)
+        v_true = model(x, t)  # free for the oracle
+        if v_a is None or k not in T_cache:  # need two computed velocities to extrapolate
+            rec = torch.ones(B, dtype=torch.bool, device=dev)
+            c = torch.zeros(B, device=dev)
+            v_ext = v_true
+        else:
+            v_ext = v_b + col((t - t_b) / (t_b - t_a)) * (v_b - v_a)
+            c = cfg.gamma * L[k] * (v_true - v_ext).flatten(1).norm(dim=1)
+            rec = (c > budget) | (lag >= cfg.max_lag)
+
+        v_used = torch.where(col(rec), v_true, v_ext)
+        # shift history on recompute rows
+        tk = torch.full((B,), t, device=dev)
+        if v_b is None:
+            t_b, v_b = tk.clone(), v_true.clone()
+        else:
+            if v_a is None:
+                t_a, v_a = t_b.clone(), v_b.clone()
+            t_a = torch.where(rec, t_b, t_a)
+            v_a = torch.where(col(rec), v_b, v_a)
+            t_b = torch.where(rec, tk, t_b)
+            v_b = torch.where(col(rec), v_true, v_b)
+
+        nfe += rec.long()
+        lag = torch.where(rec, torch.zeros_like(lag), lag + 1)
+        budget = torch.where(rec, budget, budget - c)
+        reused[k] = ~rec
+        x = solver.step(x, v_used, k)
+
+    return x, {"nfe": nfe, "reused": reused, "bound_used": cfg.eta - budget, "budget_left": budget}
