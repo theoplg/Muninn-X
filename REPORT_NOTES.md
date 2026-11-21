@@ -1,7 +1,7 @@
 # Muninn-X — experiment notes
 
-Running log of experiments: setup, results and interpretation. `runs/` is gitignored, so
-**this file is the durable record**. Every entry lists the command that reproduces it.
+Running log of experiments: setup, results and interpretation. `runs/` holds the raw outputs
+(tracked in git); **this file is the record of what they mean**. Every entry lists the command that reproduces it.
 
 - Newest findings go in **Key findings** (top). Each experiment gets an entry under **Log**.
 - Planned experiments live in **Next experiments** until they are run, then move to the log.
@@ -616,3 +616,6 @@ uncertified p95 error vs NFE on calibration chains).
 - 2026-11-21 new model `runs/toy_8gaussians_b16k` (batch 16384, 30k iters) because the original
   8gaussians model is rough in $t$ (finding 13). E0–E8 still use the original model.
 - 2026-11-21 `bonferroni_select` (order-free LTT) added; E9 uses it as the main selection rule.
+- 2026-11-21 `runs/` is now tracked in git (toy checkpoints, `results.json`, plots: ~7 MB), so every
+  number in this file can be checked without rerunning. Heavy future artefacts must be ignored
+  explicitly in `.gitignore`.

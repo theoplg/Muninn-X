@@ -220,4 +220,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 # experiment outputs
-runs/
+# runs/ is tracked (small toy checkpoints, results.json, plots) so collaborators can see the experiments.
+# Ignore heavy future artefacts explicitly instead, e.g.:
+runs/**/*.npz
+runs/**/*.ckpt
