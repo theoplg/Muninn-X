@@ -55,6 +55,19 @@ Running log of experiments: setup, results and interpretation. `runs/` is gitign
    $(\eta, \alpha)$, Muninn needs 64–97 NFE where certified AB2 needs 4–14 and certified Euler
    7–150. Against the exact ODE, Muninn cannot certify $\eta \le 0.05$ (checkerboard) at all,
    since it inherits Euler-100's own error.
+12. **Per-sample adaptivity has a real but small ceiling: ~1.1–1.35× over certified AB2** (E9).
+   The best oracle (extrapolate on an AB2 base, decide by the true $G$-weighted cost
+   $h\lVert G_{k+1\to N} e_k\rVert$, threshold rule) beats certified AB2 only at tight tolerances
+   ($\eta \le 0.05$), on both smooth models, with *free* knowledge of $e_k$ and $G$. Being
+   $G$-aware matters (1.1–1.5× over the plain cost); a greedy budget rule is far worse than a
+   threshold. A practical method must pay for a probe (≈ 8 NFE here) and use conservative
+   predictors, which is about the size of the gain: on these toys it would at best tie.
+13. **Model smoothness in $t$ confounds solver comparisons** (E9). The original 8gaussians model
+   (batch 1024) has a velocity that oscillates in $t$ faster than the grid step (fine-scale
+   $\lvert\partial_t v\rvert$ is 1.74× its one-step average; sinusoidal embedding with frequencies
+   up to $1000\,t$). Higher-order FewSteps then converges erratically and adaptive oracles look
+   4–9× better than they are. Retrained with batch 16384 (`runs/toy_8gaussians_b16k`, ratio 1.20)
+   the effect disappears.
 
 **Implication.** (a) *Validity*: the sensitivity weights must account for the flow's
 amplification, or calibration must target the final d directly (CertFew already does).
@@ -493,6 +506,79 @@ certify $\eta < 0.1$ there, because it does not reproduce Euler-100's own error.
   for adaptivity is a policy that is both higher-order (extrapolation) and boundary-aware ($G$),
   certified the same way: that is what E9 tests, first as an oracle.
 
+### E9 — $G$-aware adaptive extrapolation oracle vs certified AB2 (2026-11-21)
+```bash
+python scripts/g_aware_oracle.py --ckpt runs/toy_checkerboard/model.pt      # n_cal 4000, n_test 50000
+python scripts/g_aware_oracle.py --ckpt runs/toy_8gaussians_b16k/model.pt   # smooth retrain, see finding 13
+python scripts/g_aware_oracle.py --ckpt runs/toy_8gaussians/model.pt        # original (rough in t)
+```
+**Question.** Give adaptivity every advantage: higher-order base, extrapolation, and perfect
+knowledge of both the injected error and its downstream amplification. Does it beat certified AB2?
+
+**Policies** (`muninnx/cache/oracle.py::oracle_extrap_ab2_sample`). Base grid: AB2 with
+$N = 100$ (with full compute it is 0.0008 from the exact ODE, so no accuracy floor). At each step
+$k \ge 2$, per sample, either compute $v$ or extrapolate it linearly from the last two computed
+velocities (at most 10 in a row). The state update is AB2 on the velocities actually used. The
+decision uses the true error $e_k = v(x_k) - v_{\text{ext}}$ (the network is evaluated every step
+for free; only computed steps count as NFE) through one of two costs:
+- plain: $c_k = h\lVert e_k\rVert$;
+- **$G$-aware**: $c_k = h\lVert G_{k+1\to N}\, e_k\rVert$, with $G$ the flow Jacobian along the
+  AB2-100 reference chain (`muninnx/analysis/flow.py`), i.e. the error's actual effect on the
+  final sample;
+
+and one of two rules: **threshold** (extrapolate iff $c_k \le \tau$) or **budget** (greedy, as in
+Muninn: extrapolate iff $c_k \le$ remaining budget $\lambda$). Sanity check: knob $= 0$ reproduces
+plain AB2-100 exactly (max difference 0.0); knob $= \infty$ gives the 10-NFE floor (2 start-up
+steps + one compute every 11 steps).
+
+**Certification.** As in E8, against the exact ODE, $\alpha = 0.05$, 4000 calibration / 50k test
+chains. Because $d(N')$ is not monotone for AB2 (finding 13, and mildly on checkerboard), the main
+selection rule is **order-free LTT with a Bonferroni correction** (`bonferroni_select`): every
+knob value is tested at level $\delta/\lvert\text{knobs}\rvert$ and the cheapest certified one is
+kept. All 144 certified rows have test $p_{\text{viol}} \le \alpha$.
+
+**Mean NFE for $P(d > \eta) \le 0.05$** (LTT + Bonferroni, exact-ODE reference)
+
+| $\eta$ | checkerboard AB2 | checkerboard $G$-thr. | checkerboard plain-thr. | 8gauss. (smooth) AB2 | 8gauss. (smooth) $G$-thr. | 8gauss. (smooth) plain-thr. |
+|---|---|---|---|---|---|---|
+| 0.005 | **42** | 47.7 | 64.4 | 55 | **46.0** | 67.5 |
+| 0.01 | 33 | **25.8** | 38.1 | 36 | **27.5** | 39.4 |
+| 0.02 | 22 | **18.1** | 21.5 | 21 | **19.8** | 22.8 |
+| 0.05 | 15 | **11.1** | 12.5 | **11** | 14.9 | 17.1 |
+| 0.1 | 11 | **10.0** | 10.0 | **8** | 10.0 | 17.1 |
+| 0.2 | **8** | 10 | 10 | **5** | 10 | 10 |
+| 0.5 | **6** | 10 | 10 | **3** | 10 | 10 |
+
+Budget-rule policies need 48–95 NFE for $\eta \le 0.05$ on both models (full table in
+`results.json`). On the original, rough-in-$t$ 8gaussians model the fixed-sequence test made the
+oracles look 4–9× better than AB2; with Bonferroni the gap shrinks to at most 1.15× (and AB2 wins
+at most $\eta$), which is how finding 13 was found.
+
+Plot: `runs/toy_*/g_aware_oracle/certified_nfe.png` (left: certified NFE vs $\eta$; right:
+uncertified p95 error vs NFE on calibration chains).
+
+**Interpretation**
+- **First positive result for adaptivity, but small.** With perfect information, the $G$-aware
+  threshold oracle beats certified AB2 by **1.1–1.35×** at tight tolerances ($\eta \le 0.05$ on
+  checkerboard, $\eta \le 0.02$ on smooth 8gaussians). In the uncertified view it reaches about
+  **2× lower p95 error at equal NFE** between 15 and 60 NFE; because the error falls steeply with
+  NFE, that converts to only ~1.3× fewer NFE.
+- **$G$ is what makes it work.** With the plain cost $h\lVert e\rVert$ the oracle is roughly tied
+  with AB2 (sometimes worse). Weighting by the downstream effect, i.e. extrapolating freely away
+  from basin boundaries and computing near them, is worth 1.1–1.5×. This is the per-sample effect
+  predicted in THEORY_NOTES §4.
+- **Threshold, not budget.** A greedy budget spends everything in the first steps and then must
+  compute all remaining steps; at tight $\eta$ it needs 3–8× more NFE than the threshold rule. The
+  paper's budget mechanism is the wrong allocation rule.
+- **The structure caps the gain at loose tolerances.** With $N = 100$ and at most 10 consecutive
+  extrapolations, the oracle cannot go below 10 NFE, while AB2 certifies $\eta \ge 0.2$ with 3–8.
+  A coarser base grid would remove this floor (not tested).
+- **What a real method would face.** The oracle gets $e_k$ and $G$ for free. A practical version
+  needs (i) a probe to predict the extrapolation error (≈ 0.08 NFE per step, i.e. ≈ 8 NFE per
+  sample here, as large as the whole gain at 25 NFE), (ii) a predictor of $\lVert G\rVert$ from
+  the current state (the future is unknown), and (iii) conservative calibration of both. On these
+  toys that would at best tie with certified AB2.
+
 ---
 
 ## Open questions
@@ -510,12 +596,15 @@ certify $\eta < 0.1$ there, because it does not reproduce Euler-100's own error.
 ## Next experiments (planned)
 | id | experiment | hypothesis / what it decides |
 |---|---|---|
-| E9 | **$G$-aware extrapolation oracle**: extrapolate instead of reuse, and decide with the true cost $h\lVert G\rVert\lVert e\rVert$ instead of $h\lVert e\rVert$; certify end-to-end as in E8 | Phase 3. Can per-sample allocation (extrapolate away from basin boundaries) beat **certified AB2** (E8) even with perfect information? If not, adaptivity is dead on toys. |
-| E10 | Fix (a) for the record: conformal bound on $h\lVert G\rVert$, optionally conditioned on probe features | Only if the per-step certificate is wanted for the write-up; E8 suggests it will be very conservative. |
-| E11 | **Adaptive step size on an AB2 base** (embedded error estimate, certified end-to-end) | Classical adaptivity, as a further baseline. |
-| E12 | **Non-uniform FewSteps** grid (more steps where E[ε] is large) | Captures time-dependent difficulty without per-sample decisions. |
-| E13 | Ablations: literal paper rule (max_lag = 1, score vs F_{k−1}), per-lag U, forbid sizes | Completes GUIDE Finding 1 (a) and the M3 ablations. |
-| M1 | Maze2D | The place where per-sample difficulty may actually vary. Worth it if E9 shows any adaptive gain, or as the final real-data check. |
+| E10 | **Can $\lVert G\rVert$ be predicted from the current state?** Regress $\log\lVert G_{k+1\to N}\rVert$ on probe features / $(x_k, t_k)$ on calibration chains | Decides whether the E9 gain is reachable by a real method. If the probe cannot locate basin boundaries, the ceiling is unreachable. |
+| E11 | **Realistic $G$-aware extrapolation**: predicted error + predicted $G$ + probe cost, certified end-to-end | Only if E10 is positive. Target: beat certified AB2 at $\eta \le 0.05$ including probe cost. |
+| E12 | Coarser base grid ($N = 50$) / larger max_lag for the E9 oracle | Removes the 10-NFE floor; does the ceiling grow at loose $\eta$? |
+| E13 | Fix (a) for the record: conformal bound on $h\lVert G\rVert$ in the per-step certificate | Only if the per-step certificate is wanted for the write-up; expected very conservative. |
+| E14 | Same E7 check on a DDIM / VP-path sampler | Is the certificate gap generic (not FM-specific)? |
+| E15 | **Adaptive step size on an AB2 base** (classical embedded error estimate), certified end-to-end | Classical per-sample adaptivity as a baseline for E11. |
+| E16 | **Non-uniform FewSteps** grid (more steps where $\mathbb E[\varepsilon]$ is large) | Captures time-dependent difficulty without per-sample decisions. |
+| E17 | Ablations: literal paper rule (max_lag = 1, score vs $F_{k-1}$), per-lag $U$, forbid sizes | Completes GUIDE Finding 1 (a) and the M3 ablations. |
+| M1 | Maze2D | The place where per-sample difficulty may actually vary. Worth it if E10/E11 show the E9 gain is reachable, or as the final real-data check. |
 | — | ~~x̂₁ reuse~~ | Dropped: provably identical to v reuse with Euler (E5). |
 
 ## Changelog of code affecting results
@@ -524,3 +613,6 @@ certify $\eta < 0.1$ there, because it does not reproduce Euler-100's own error.
 - 2026-11-19 merge with upstream: `controller.py` from upstream (full-batch call when all rows
   recompute; `bound_used` accumulated directly). Re-checked: 8gaussians η = 0.3 gives NFE 85.4,
   E[d] 0.068, identical to before.
+- 2026-11-21 new model `runs/toy_8gaussians_b16k` (batch 16384, 30k iters) because the original
+  8gaussians model is rough in $t$ (finding 13). E0–E8 still use the original model.
+- 2026-11-21 `bonferroni_select` (order-free LTT) added; E9 uses it as the main selection rule.

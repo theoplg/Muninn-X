@@ -47,6 +47,17 @@ def fixed_sequence_select(d_list, eta, alpha, method="conformal", delta=0.05):
     return chosen
 
 
+def bonferroni_select(d_list, costs, eta, alpha, delta=0.05):
+    """Order-free LTT: test EVERY configuration at level delta / |configs| (Bonferroni) and return the
+    index of the cheapest one that certifies P(d > eta) <= alpha, or None. Valid without any
+    monotonicity of the risk in the knob (unlike fixed-sequence testing), at the price of a
+    stricter per-configuration test."""
+    level = delta / len(d_list)
+    ok = [i for i, d in enumerate(d_list)
+          if certifies(int((d > eta).sum()), d.numel(), alpha, "ltt", level)]
+    return min(ok, key=lambda i: costs[i]) if ok else None
+
+
 def select_n_steps(d_cal, eta, alpha, method="conformal", delta=0.05):
     """d_cal: {N': (n,) distances}. Returns the smallest certified N' via fixed-sequence testing
     from the largest N' downward (the full chain N has d = 0 and always certifies)."""
