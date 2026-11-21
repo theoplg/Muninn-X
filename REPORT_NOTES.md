@@ -9,7 +9,7 @@ Running log of experiments: setup, results and interpretation. `runs/` is gitign
 
 ---
 
-## Key findings (as of 2026-11-19)
+## Key findings (as of 2026-11-21)
 
 1. **Muninn on velocity + Euler does not beat FewSteps.** At matched mean NFE, uniform Euler
    with fewer steps has a 5–15× smaller E[d] on both toys (E0, E1, E2).
@@ -40,6 +40,21 @@ Running log of experiments: setup, results and interpretation. `runs/` is gitign
 9. **The certificate target matters.** Euler-100 itself is 0.039 (checkerboard) / 0.023
    (8gaussians) away from the exact ODE solution. AB2 with 15–20 NFE is closer to the exact
    solution than Euler-100 is. Certifying closeness to Euler-100 penalises better solvers.
+
+10. **The cause of the invalid certificate is identified exactly** (E7, [THEORY_NOTES.md](THEORY_NOTES.md)).
+   The paper's accounting drops the drift term: the exact recursion is
+   $\Delta_{k+1} = (I + h\bar J_k)\Delta_k + h e_k$, so the correct weight is
+   $L_k = h\lVert M_{k+1\to N}\rVert$ (flow Jacobian), not $h$. With it, the bound holds for
+   99.9–100% of samples (paper: 22–90%). For FM,
+   $\partial v/\partial x = \frac{1}{1-t}\big[\frac{t}{(1-t)^2}\mathrm{Cov}(x_1\mid x_t) - I\big]$ (Tweedie),
+   which the trained network follows (corr ≥ 0.98): errors are amplified where the endpoint is
+   still uncertain, i.e. on the **boundaries between modes**, and contracted inside narrow modes.
+11. **End-to-end certification makes Muninn valid, but certified AB2 wins by 6–14×** (E8).
+   Choosing the controller's budget $\lambda$ by fixed-sequence LTT on the final $d$ gives
+   $p_{\text{viol}} \le \alpha$ on every test row (146/146 with LTT). But at equal certified
+   $(\eta, \alpha)$, Muninn needs 64–97 NFE where certified AB2 needs 4–14 and certified Euler
+   7–150. Against the exact ODE, Muninn cannot certify $\eta \le 0.05$ (checkerboard) at all,
+   since it inherits Euler-100's own error.
 
 **Implication.** (a) *Validity*: the sensitivity weights must account for the flow's
 amplification, or calibration must target the final d directly (CertFew already does).
@@ -345,6 +360,139 @@ Plot: `runs/toy_*/extrap_oracle/pareto.png` (left: vs Euler-100, right: vs exact
   value can only be met by tracking Euler's error.
 - Heun (2 NFE/step) is worse than AB2 at equal NFE on both toys.
 
+### E7 — Why the certificate breaks: corrected recursion + Tweedie Jacobian (2026-11-21)
+```bash
+python scripts/theory_check.py --ckpt runs/toy_checkerboard/model.pt   # n 20000, oracle η ∈ {0.05, 0.3}
+python scripts/theory_check.py --ckpt runs/toy_8gaussians/model.pt
+```
+Derivation in [THEORY_NOTES.md](THEORY_NOTES.md). In short: the exact recursion is
+Δ_{k+1} = (I + h J̄_k) Δ_k + h e_k, so d = ‖Σ_k h M_{k+1→N} e_k‖. The paper sets M = I (K = 1 for
+Euler), dropping the drift term h J̄_k Δ_k. For FM, ∂v/∂x = [t/(1−t)² Cov(x₁|x_t) − I]/(1−t), which
+expands perturbations wherever the posterior over the endpoint is still wide.
+
+**Bounds vs actual deviation** (E2 oracle chains, same noise; B = Σ h·w_k‖e_k‖ with weight w_k)
+
+| dataset | η | NFE | w = 1 (paper) | w = ‖G‖ along full chain | w = ‖M‖ mean-value (exact) | median d / B_paper | median d / B_G |
+|---|---|---|---|---|---|---|---|
+| checkerboard | 0.05 | 81.6 | 0.216 | 0.859 | **0.9989** | 1.61 | 0.73 |
+| checkerboard | 0.3 | 22.2 | 0.234 | 0.860 | **1.0000** | 1.26 | 0.73 |
+| 8gaussians | 0.05 | 86.5 | 0.776 | 1.000 | **1.0000** | 0.79 | 0.42 |
+| 8gaussians | 0.3 | 29.5 | 0.902 | 1.000 | **1.0000** | 0.75 | 0.47 |
+
+(fraction of samples with d ≤ B)
+
+**Flow Jacobian ‖G_{k+1→N}‖_op along the full chain** (median / p90 / p99)
+
+| k | checkerboard | 8gaussians |
+|---|---|---|
+| 5 | 2.33 / 5.21 / 23.2 | 2.07 / 8.89 / 45.4 |
+| 20 | 2.36 / 5.30 / 23.5 | 1.95 / 8.32 / 42.0 |
+| 40 | 1.83 / 4.04 / 17.6 | 1.26 / 4.62 / 24.4 |
+| 60 | 1.44 / 2.13 / 8.2 | 1.02 / 1.70 / 8.1 |
+| 80 | 1.23 / 1.25 / 2.5 | 1.12 / 1.13 / 1.8 |
+| 94 | 1.06 / 1.07 / 1.1 | 1.05 / 1.05 / 1.1 |
+
+**Tweedie check**: network ∂v/∂x vs the closed form with Cov(x₁|x_t) estimated by self-normalised
+Monte Carlo over 200k data samples (largest eigenvalue, median / p90)
+
+| t | checkerboard net | checkerboard Tweedie | corr | 8gaussians net | 8gaussians Tweedie | corr |
+|---|---|---|---|---|---|---|
+| 0.10 | −0.30 / −0.27 | −0.30 / −0.28 | 0.87 | −0.01 / +0.08 | −0.02 / +0.01 | 0.79 |
+| 0.30 | +1.53 / +1.77 | +1.53 / +1.76 | 1.00 | +2.06 / +4.03 | +2.04 / +4.01 | 0.99 |
+| 0.50 | +1.89 / +3.50 | +1.89 / +3.48 | 1.00 | +1.45 / +4.84 | +1.51 / +4.72 | 0.99 |
+| 0.70 | +0.81 / +3.79 | +0.81 / +3.79 | 0.99 | −0.51 / +1.84 | −0.54 / +1.12 | 0.98 |
+| 0.85 | +1.15 / +1.32 | +1.17 / +1.42 | 0.89 | +0.34 / +0.41 | +0.41 / +0.67 | 0.88 |
+
+Figure: `runs/toy_*/theory/theory.png` (left: d vs both bounds; middle: map of ‖G‖ for an error
+made at t = 0.2; right: λ_max(∂v/∂x) vs t, network and Tweedie).
+
+**Interpretation**
+- **The theory is exact.** With Jacobians averaged between the two chains (the mean-value form of
+  the recursion), the corrected bound holds for 99.9–100% of samples. The residual 0.1% is the
+  8-point quadrature of that average. The paper bound fails for 77–78% (checkerboard) and 10–22%
+  (8gaussians).
+- **Linearising along the full chain is not enough on checkerboard** (86%): the corrected bound
+  is fairly tight there (median d/B = 0.73) and the deviation is large enough (linear predictor
+  rel. error p90 17–51%) that the Jacobian must be taken between the chains, not on one of them.
+  On 8gaussians the slack (d/B ≈ 0.45) absorbs it.
+- **The trained network follows the Tweedie formula closely** (λ_max correlation 0.98–1.00 for
+  t ∈ [0.3, 0.7]). The amplification is a property of the *data distribution*, not an artefact of
+  this MLP. (At t = 0.1 on 8gaussians, v ≈ 0 by symmetry, so relative errors are ill-defined.)
+- **Quantitative prediction confirmed.** Inside a Gaussian mode of std s, the sign of λ flips at
+  t = 1/(1+s²) = 0.8 for 8gaussians: predicted λ = −0.59 at t = 0.7 (measured −0.51) and +0.31 at
+  t = 0.85 (measured +0.34).
+- **Amplification sits on the basin boundaries.** The ‖G‖ map shows 8 thin rays for 8gaussians
+  and the cell boundaries for checkerboard: the noise points where a small push changes which
+  mode the sample ends in. Errors elsewhere are amplified ~1–2×.
+- **Data geometry explains E2.** Narrow modes contract late in sampling, so the paper bound is
+  often loose-but-valid on 8gaussians. Flat squares expand everywhere (λ > 0 for t ≥ 0.3), so it
+  fails on most checkerboard samples.
+
+### E8 — End-to-end certified Muninn vs certified FewSteps Euler / AB2 (2026-11-21)
+```bash
+python scripts/certified_compare.py --ckpt runs/toy_checkerboard/model.pt   # n_fit 2000, n_cal 4000, n_test 50000
+python scripts/certified_compare.py --ckpt runs/toy_8gaussians/model.pt
+```
+**Question.** Once every method is certified the *same* way, which one needs the least compute
+for a given guarantee $P(d > \eta) \le \alpha$?
+
+**Method** (option (b) of [THEORY_NOTES.md](THEORY_NOTES.md) §5). Each method has one knob,
+tested by fixed-sequence testing on 4000 calibration chains, from the safest setting to the most
+aggressive; the last setting that certifies is deployed and evaluated on 50k fresh test chains.
+- **Certified FewSteps Euler / AB2**: knob = step count $N'$ (from 400 down; against the Euler-100
+  reference, Euler starts at $N' = 100$, where $d = 0$).
+- **Certified Muninn**: knob = the controller's internal budget $\lambda$ (grid 0 … 10, from 0 up).
+  $U(s)$ is fitted on 2000 *separate* chains and is now only a decision heuristic: validity comes
+  from the calibration, not from the per-step bound.
+- Two tests: conformal, $(k+1)/(n+1) \le \alpha$ (marginal), and LTT,
+  $P(\mathrm{Binom}(n, \alpha) \le k) \le \delta = 0.05$ (PAC).
+- Two references: the exact ODE (RK4-400, main) and the full Euler-100 chain.
+- Probe cost (multiply-accumulate count of the stem vs the whole MLP): **0.079** forward passes,
+  i.e. $+7.9$ NFE-equivalents per Muninn sample.
+
+Plot: `runs/toy_*/certified_compare/certified_nfe.png` (NFE needed vs $\eta$, $\alpha = 0.05$).
+
+**Validity.** LTT: 0 / 146 certified rows exceed $\alpha$ on test (worst margin $-0.004$).
+Conformal: 5 / 146 exceed $\alpha$, by at most $+0.0032$, as expected for a guarantee that only
+holds on average over calibration draws. **Muninn is now valid on checkerboard**, where the
+per-step certificate failed (E2/E4).
+
+**Mean NFE for $P(d > \eta) \le 0.05$, LTT, reference = exact ODE** (inf = not certifiable)
+
+| $\eta$ | checkerboard Euler | checkerboard AB2 | checkerboard Muninn | 8gaussians Euler | 8gaussians AB2 | 8gaussians Muninn |
+|---|---|---|---|---|---|---|
+| 0.02 | 370 | **21** | inf | 170 | 170 | inf |
+| 0.05 | 150 | **14** | inf | 91 | **90** | 95.0 |
+| 0.1 | 74 | **10** | 97.0 | 35 | **10** | 92.7 |
+| 0.2 | 40 | **8** | 94.0 | 16 | **6** | 75.6 |
+| 0.3 | 29 | **7** | 87.9 | 11 | **4** | 63.8 |
+| 0.5 | 19 | **6** | 81.4 | 7 | **4** | 18.0 |
+
+Against the Euler-100 reference (conformal, $\alpha = 0.05$), Muninn is certifiable at small
+$\eta$ but still needs 94–98 NFE where certified Euler needs 42–90 (checkerboard). AB2 cannot
+certify $\eta < 0.1$ there, because it does not reproduce Euler-100's own error.
+
+**Interpretation**
+- **(b) works as a fix for validity.** One scalar knob, chosen on calibration chains, turns any
+  caching policy into a certified one, with no Lipschitz assumption. The per-step bound becomes a
+  heuristic that only orders the decisions.
+- **It also corrects Muninn's conservatism.** On 8gaussians the chosen $\lambda$ is *larger* than
+  $\eta$ (0.5 at $\eta = 0.2$, 0.75 at $\eta = 0.3$) because the flow contracts errors there; on
+  checkerboard it stays $\le \eta$. The calibration learns what the per-step bound got wrong in
+  both directions.
+- **But certified Muninn is the most expensive method at every tolerance.** It needs 64–97 NFE
+  (plus 7.9 for the probe) where certified AB2 needs 4–14: a 6–14× gap. Even certified Euler
+  beats it by 1.3–5× everywhere except very small $\eta$ against the Euler-100 reference.
+- **Against the exact ODE, Muninn has an accuracy floor.** It can only approximate the Euler-100
+  chain, which is itself 0.039 / 0.023 away from the exact solution, so tolerances below that
+  cannot be certified at any budget. Higher-order FewSteps has no such floor.
+- **Non-monotone risk still costs the fixed-sequence test.** On 8gaussians at $\eta = 0.05$, LTT
+  stops AB2 at $N' = 90$ (the conformal test reaches $N' = 26$), as in E4.
+- **Conclusion for toys.** With validity fixed, the ranking is clear: certified AB2 ≪ certified
+  Euler < certified Muninn. Velocity reuse with an Euler base is dominated. The only open route
+  for adaptivity is a policy that is both higher-order (extrapolation) and boundary-aware ($G$),
+  certified the same way: that is what E9 tests, first as an oracle.
+
 ---
 
 ## Open questions
@@ -362,12 +510,12 @@ Plot: `runs/toy_*/extrap_oracle/pareto.png` (left: vs Euler-100, right: vs exact
 ## Next experiments (planned)
 | id | experiment | hypothesis / what it decides |
 |---|---|---|
-| E7 | **Certified FewSteps with AB2, against the exact ODE** (E4 method, new reference) | The new bar. Expect far fewer NFE than certified Euler for the same (η, α). |
-| E8 | **Adaptive step size on an AB2 base** (embedded error estimate, certified end-to-end) | Last test of per-sample adaptivity on toys. Must beat E7 at equal (η, α). |
-| E9 | **Fix Muninn's validity**: conformal bound on the measured sensitivity Δ·G_k, or end-to-end calibration | Needed only if we keep the per-step certificate. Restores p_viol ≤ α on checkerboard. |
-| E10 | **Non-uniform FewSteps** grid (more steps where E[ε] is large) | Captures time-dependent difficulty without per-sample decisions. |
-| E11 | Ablations: literal paper rule (max_lag = 1, score vs F_{k−1}), per-lag U, forbid sizes | Completes GUIDE Finding 1 (a) and the M3 ablations. |
-| M1 | Maze2D | The place where per-sample difficulty may actually vary. Worth it if E8 shows any adaptive gain, or as the final real-data check. |
+| E9 | **$G$-aware extrapolation oracle**: extrapolate instead of reuse, and decide with the true cost $h\lVert G\rVert\lVert e\rVert$ instead of $h\lVert e\rVert$; certify end-to-end as in E8 | Phase 3. Can per-sample allocation (extrapolate away from basin boundaries) beat **certified AB2** (E8) even with perfect information? If not, adaptivity is dead on toys. |
+| E10 | Fix (a) for the record: conformal bound on $h\lVert G\rVert$, optionally conditioned on probe features | Only if the per-step certificate is wanted for the write-up; E8 suggests it will be very conservative. |
+| E11 | **Adaptive step size on an AB2 base** (embedded error estimate, certified end-to-end) | Classical adaptivity, as a further baseline. |
+| E12 | **Non-uniform FewSteps** grid (more steps where E[ε] is large) | Captures time-dependent difficulty without per-sample decisions. |
+| E13 | Ablations: literal paper rule (max_lag = 1, score vs F_{k−1}), per-lag U, forbid sizes | Completes GUIDE Finding 1 (a) and the M3 ablations. |
+| M1 | Maze2D | The place where per-sample difficulty may actually vary. Worth it if E9 shows any adaptive gain, or as the final real-data check. |
 | — | ~~x̂₁ reuse~~ | Dropped: provably identical to v reuse with Euler (E5). |
 
 ## Changelog of code affecting results
