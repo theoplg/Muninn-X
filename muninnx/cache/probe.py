@@ -14,5 +14,7 @@ def probe_features(model, x, t):
 
     Must be MUCH cheaper than model(x, t): only run the stem.
     """
+    if hasattr(model, "probe"):  # trajectory backbones (muninnx.models.traj_backbones) define their own
+        return model.probe(x, t)
     stem1 = model.stem(model.embed_input(x,t))
     return stem1

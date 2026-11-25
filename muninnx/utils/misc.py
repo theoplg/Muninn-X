@@ -15,9 +15,10 @@ def seed_all(seed):
 
 
 def get_device(name="auto"):
-    if name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(name)
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu") if name == "auto" else torch.device(name)
+    if dev.type == "cuda":
+        cap_gpu_memory()  # never spill into system RAM (see cap_gpu_memory)
+    return dev
 
 
 def save_json(obj, path):
@@ -39,3 +40,12 @@ def load_checkpoint(path, model_cls, device):
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     return model, ckpt["cfg"]
+
+
+def cap_gpu_memory(fraction=0.9):
+    """Hard cap on this process's GPU memory. On Windows/WSL the NVIDIA driver otherwise spills
+    over-allocations into shared system RAM instead of raising an out-of-memory error, which can freeze
+    and crash the whole machine. With the cap, an oversized allocation fails with a normal CUDA OOM."""
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.set_per_process_memory_fraction(fraction)

@@ -779,7 +779,7 @@ cost predictor and of a dedicated $\lVert G\rVert$ predictor).
 ## Next experiments (planned)
 | id | experiment | hypothesis / what it decides |
 |---|---|---|
-| M0.5 | **Trajectory toy + other backbones**: synthetic multimodal 2D paths (left/right of an obstacle, length 32); temporal U-Net (Diffuser-style) and small transformer | Do E7/E14 (gap, amplification), E8/E9/E10 (certified comparison, realistic policy) transfer across backbones? Includes **feature caching** (recompute shallow blocks, reuse deep ones), the one regime an MLP cannot test. |
+| M0.5 | **Trajectory toy + U-Net**: synthetic multimodal 2D paths (left/right of an obstacle, length 32; `muninnx/data/traj2d.py`), temporal U-Net (Diffuser-style) and the flattened MLP as reference | Do E7/E14 (gap, amplification), E8/E9/E10 (certified comparison, realistic policy) transfer to the paper's backbone family? Includes **feature caching** (recompute shallow blocks, reuse deep ones), the one regime an MLP cannot test. Status 2026-11-25: data + MLP/U-Net/transformer trained and checked (`runs/traj_toy/check.json`); U-Net (1.49) and transformer (1.64) are rough in $t$, U-Net being retrained with batch 16384. **Transformer deferred** to the end if time allows. |
 | E12 | Coarser base grid ($N = 50$) / larger max_lag for the E9 oracle | Removes the 10-NFE floor; does the ceiling grow at loose $\eta$? |
 | E13 | Fix (a) for the record: conformal bound on $h\lVert G\rVert$ in the per-step certificate | Only if the per-step certificate is wanted for the write-up; expected very conservative. |
 | E15 | **Adaptive step size on an AB2 base** (classical embedded error estimate), certified end-to-end | Classical per-sample adaptivity: does a standard error estimator already match E10's learned policy? |
@@ -803,3 +803,10 @@ cost predictor and of a dedicated $\lVert G\rVert$ predictor).
 - 2026-11-24 `muninnx/diffusion/ddpm.py` (VP schedule, DDPM/DDIM solvers with the paper's $K_t, L'_t$) and `scripts/train_ddpm_toy.py` for E14.
 - 2026-11-24 THEORY_NOTES §3/§7 corrected: the flaw is the last equality of the paper's Eq. (1) (network evaluated at the cached state instead of the full state), not Assumption 1; their $e_t$ is defined at the cached state. Page references added. No numbers change.
 - 2026-11-25 `muninnx/cache/extrap_policy.py` (generic extrapolate-or-compute AB2 loop with pluggable decisions and observable features) and `scripts/e10_predictability.py` for E10.
+- 2026-11-25 M0.5 infrastructure: `muninnx/data/traj2d.py`, `muninnx/models/traj_backbones.py` (MLP / temporal U-Net /
+  transformer with encode-core-decode split), `muninnx/models/flat.py` (flat wrapper so all point-based code runs on
+  trajectories), `flow_gain` (chunked flow-Jacobian norms), `probe_features` dispatches to `model.probe`,
+  `scripts/train_traj.py` (compile + bf16 training), `scripts/check_traj_models.py`.
+- 2026-11-25 **GPU memory cap** (`cap_gpu_memory`, applied in `get_device`): a check script materialised ~14 GB on the
+  12 GB GPU; under WSL the NVIDIA driver spilled it into system RAM instead of raising OOM and the PC crashed. The
+  smoothness check is now streamed (constant memory) and every script runs under a 90% VRAM cap (clean OOM instead).
