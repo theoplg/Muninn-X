@@ -20,9 +20,9 @@ from muninnx.models.mlp import SinusoidalEmbedding, as_batch_time
 
 
 class TimeMLP(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim, scale=1000.0):
         super().__init__()
-        self.net = nn.Sequential(SinusoidalEmbedding(64), nn.Linear(64, dim), nn.SiLU(), nn.Linear(dim, dim))
+        self.net = nn.Sequential(SinusoidalEmbedding(64, scale), nn.Linear(64, dim), nn.SiLU(), nn.Linear(dim, dim))
 
     def forward(self, t):
         return self.net(t)
@@ -174,12 +174,12 @@ class MazeUNet(TrajBackbone):
     core = all down / mid / up levels, decode = last block (with the full-resolution skip) + output conv.
     Like Diffuser it has two mid blocks at the deepest level (TrajUNet has one), so it is not TrajUNet's topology."""
 
-    def __init__(self, H=128, dim=6, c=32, mults=(1, 2, 4, 8), t_dim=128):
+    def __init__(self, H=128, dim=6, c=32, mults=(1, 2, 4, 8), t_dim=128, t_scale=1000.0):
         super().__init__()
         assert H % 2 ** (len(mults) - 1) == 0, "H must be divisible by 2^(levels-1)"
         self.H, self.dim = H, dim
         ch = [c * m for m in mults]
-        self.time = TimeMLP(t_dim)
+        self.time = TimeMLP(t_dim, t_scale)
         self.inp = nn.Conv1d(dim, ch[0], 5, padding=2)
         self.enc = FiLMResBlock1d(ch[0], ch[0], t_dim)
         self.downs = nn.ModuleList([nn.Conv1d(ch[i - 1], ch[i], 3, stride=2, padding=1) for i in range(1, len(ch))])

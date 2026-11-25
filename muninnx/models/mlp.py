@@ -10,14 +10,15 @@ from torch import nn
 
 
 class SinusoidalEmbedding(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim, scale=1000.0):
         super().__init__()
         self.dim = dim
+        self.scale = scale  # fastest angular frequency in t; 1000 (default) lets the net vary faster than a solver step
 
     def forward(self, t):  # t: (B,)
         half = self.dim // 2
         freqs = torch.exp(-math.log(10000.0) * torch.arange(half, device=t.device) / half)
-        args = 1000.0 * t[:, None] * freqs[None]  # t in [0,1] -> scale up
+        args = self.scale * t[:, None] * freqs[None]  # t in [0,1] -> scale up
         return torch.cat([args.sin(), args.cos()], dim=1)
 
 
