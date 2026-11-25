@@ -23,11 +23,10 @@ import torch
 from muninnx.baselines.fewsteps import fixed_sequence_select, sample_ab2, sample_rk4
 from muninnx.cache.calibrate import ConformalUpperBound, collect_calibration_pairs
 from muninnx.cache.controller import MuninnConfig, cache_steps, muninn_sample
-from muninnx.eval.paired import trajectory_distance
-from muninnx.models.mlp import VelocityMLP
 from muninnx.sampling import sample_full
 from muninnx.solvers.euler import EulerSolver
-from muninnx.utils.misc import get_device, load_checkpoint, save_json, seed_all
+from muninnx.tasks import load_task
+from muninnx.utils.misc import get_device, save_json, seed_all
 
 STYLE = {
     "euler":  dict(color="#2a78d6", marker="o", ls="-", label="certified FewSteps Euler"),
@@ -35,12 +34,6 @@ STYLE = {
     "muninn": dict(color="#1baf7a", marker="^", ls="-", label="certified Muninn (NFE)"),
     "muninn_probe": dict(color="#1baf7a", marker="^", ls="--", label="certified Muninn (NFE + probe)"),
 }
-
-
-def probe_cost(model):
-    """Probe cost in units of one forward pass, by multiply-accumulate count of the linear layers."""
-    macs = lambda mod: sum(m.in_features * m.out_features for m in mod.modules() if isinstance(m, torch.nn.Linear))
-    return macs(model.stem) / macs(model)
 
 
 def main():
@@ -61,17 +54,19 @@ def main():
     p.add_argument("--max-lag", type=int, default=10)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="auto")
+    p.add_argument("--max-steps", type=int, default=400, help="largest FewSteps N' tried")
     args = p.parse_args()
 
     seed_all(args.seed)
     dev = get_device(args.device)
-    model, _ = load_checkpoint(args.ckpt, VelocityMLP, dev)
+    task = load_task(args.ckpt, dev)
+    model = task.model
     N = args.n_steps
     solver = EulerSolver(N)
-    c_probe = probe_cost(model)
-    candidates = list(range(1, 101)) + list(range(110, 401, 10))  # N' for FewSteps, safest = largest
+    c_probe = task.probe_cost()
+    candidates = [n for n in list(range(1, 101)) + list(range(110, 401, 10)) if n <= args.max_steps]  # N', safest = largest
 
-    x0 = {s: torch.randn(n, 2, device=dev) for s, n in
+    x0 = {s: task.noise(n, dev) for s, n in
           (("fit", args.n_fit), ("cal", args.n_cal), ("test", args.n_test))}
     refs = {s: {"exact": sample_rk4(model, args.n_ref, x0[s]), "euler": sample_full(model, solver, x0[s])}
             for s in ("cal", "test")}
@@ -105,7 +100,7 @@ def main():
             for prm in params:
                 if (m, prm) not in samples_cal:
                     samples_cal[(m, prm)] = run(m, prm, "cal")[0]
-    d_cal = {ref: {m: [trajectory_distance(refs["cal"][ref], samples_cal[(m, prm)]).cpu() for prm in params]
+    d_cal = {ref: {m: [task.dist(refs["cal"][ref], samples_cal[(m, prm)]).cpu() for prm in params]
                    for m, params in ref_cfg.items()}
              for ref, ref_cfg in configs.items()}
 
@@ -115,7 +110,7 @@ def main():
         if (m, prm) not in test_cache:
             test_cache[(m, prm)] = run(m, prm, "test")
         x, nfe = test_cache[(m, prm)]
-        d = trajectory_distance(refs["test"][ref], x)
+        d = task.dist(refs["test"][ref], x)
         return {"nfe": nfe, "E_d": d.mean().item(), "p_viol": (d > eta).float().mean().item()}
 
     rows = []
