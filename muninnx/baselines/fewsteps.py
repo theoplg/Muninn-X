@@ -75,13 +75,16 @@ def select_n_steps(d_cal, eta, alpha, method="conformal", delta=0.05):
 # Higher-order uniform-grid samplers (FewSteps baselines for E5)
 # ---------------------------------------------------------------------------------------------
 @torch.no_grad()
-def sample_ab2(model, n_steps, x0):
-    """Adams-Bashforth 2 on a uniform grid, 1 NFE per step (first step is Euler). NFE = n_steps."""
+def sample_ab2(model, n_steps, x0, project=None):
+    """Adams-Bashforth 2 on a uniform grid, 1 NFE per step (first step is Euler). NFE = n_steps.
+    project(x, t): optional conditioning applied after every step (muninnx.conditioning.Inpaint)."""
     h = 1.0 / n_steps
     x, v_prev = x0, None
     for k in range(n_steps):
         v = model(x, k * h)
         x = x + h * (v if v_prev is None else 1.5 * v - 0.5 * v_prev)
+        if project is not None:
+            x = project(x, (k + 1) * h)
         v_prev = v
     return x
 
@@ -100,8 +103,8 @@ def sample_heun(model, n_steps, x0):
 
 
 @torch.no_grad()
-def sample_rk4(model, n_steps, x0):
-    """Classical RK4, used as a near-exact reference for the ODE solution."""
+def sample_rk4(model, n_steps, x0, project=None):
+    """Classical RK4, used as a near-exact reference for the ODE solution (project: as in sample_ab2)."""
     h = 1.0 / n_steps
     x = x0
     for k in range(n_steps):
@@ -111,4 +114,6 @@ def sample_rk4(model, n_steps, x0):
         k3 = model(x + 0.5 * h * k2, t + 0.5 * h)
         k4 = model(x + h * k3, t + h)
         x = x + h / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+        if project is not None:
+            x = project(x, t + h)
     return x

@@ -56,3 +56,12 @@ class Maze2DWindows:
 
     def stats(self):
         return {"lo": self.lo.tolist(), "hi": self.hi.tolist(), "T": self.T, "H": self.H}
+
+
+CONTEXT_DIM = 6
+
+
+def window_context(w):
+    """Planning condition of normalised windows (B, H, 6): start state (x, y, vx, vy) at the first step and
+    goal position (x, y) at the last step -> (B, 6)."""
+    return torch.cat([w[:, 0, :4], w[:, -1, :2]], dim=1)

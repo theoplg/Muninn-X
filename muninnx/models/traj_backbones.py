@@ -29,12 +29,14 @@ class TimeMLP(nn.Module):
 
 
 class TrajBackbone(nn.Module):
-    def forward(self, x, t):
-        h, aux = self.encode(x, t)
+    """c: optional per-sample condition vector (B, cond_dim), only used by backbones built with cond_dim > 0."""
+
+    def forward(self, x, t, c=None):
+        h, aux = self.encode(x, t) if c is None else self.encode(x, t, c)
         return self.decode(self.core(h, aux), h, aux)
 
-    def probe(self, x, t):
-        h, _ = self.encode(x, t)
+    def probe(self, x, t, c=None):
+        h, _ = self.encode(x, t) if c is None else self.encode(x, t, c)
         return self.pool(h)
 
 
@@ -174,12 +176,16 @@ class MazeUNet(TrajBackbone):
     core = all down / mid / up levels, decode = last block (with the full-resolution skip) + output conv.
     Like Diffuser it has two mid blocks at the deepest level (TrajUNet has one), so it is not TrajUNet's topology."""
 
-    def __init__(self, H=128, dim=6, c=32, mults=(1, 2, 4, 8), t_dim=128, t_scale=1000.0):
+    def __init__(self, H=128, dim=6, c=32, mults=(1, 2, 4, 8), t_dim=128, t_scale=1000.0, cond_dim=0):
         super().__init__()
         assert H % 2 ** (len(mults) - 1) == 0, "H must be divisible by 2^(levels-1)"
-        self.H, self.dim = H, dim
+        self.H, self.dim, self.cond_dim = H, dim, cond_dim
         ch = [c * m for m in mults]
         self.time = TimeMLP(t_dim, t_scale)
+        if cond_dim:  # condition (e.g. start state + goal) added to the time embedding; zero-init = no effect at start
+            self.cond = nn.Sequential(nn.Linear(cond_dim, t_dim), nn.SiLU(), nn.Linear(t_dim, t_dim))
+            nn.init.zeros_(self.cond[-1].weight)
+            nn.init.zeros_(self.cond[-1].bias)
         self.inp = nn.Conv1d(dim, ch[0], 5, padding=2)
         self.enc = FiLMResBlock1d(ch[0], ch[0], t_dim)
         self.downs = nn.ModuleList([nn.Conv1d(ch[i - 1], ch[i], 3, stride=2, padding=1) for i in range(1, len(ch))])
@@ -190,8 +196,10 @@ class MazeUNet(TrajBackbone):
         self.dec = FiLMResBlock1d(2 * ch[0], ch[0], t_dim)
         self.out = nn.Sequential(nn.GroupNorm(8, ch[0]), nn.SiLU(), nn.Conv1d(ch[0], dim, 5, padding=2))
 
-    def encode(self, x, t):
+    def encode(self, x, t, c=None):
         temb = self.time(as_batch_time(t, x.shape[0], x.device))
+        if self.cond_dim:
+            temb = temb + self.cond(c)
         return self.enc(self.inp(x.transpose(1, 2)), temb), temb
 
     def core(self, h, temb):

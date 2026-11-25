@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import torch
 from torch.utils.flop_counter import FlopCounterMode
 
-from muninnx.models.flat import FlatWrapper, flat_distance
+from muninnx.models.flat import CondFlatWrapper, FlatWrapper, flat_distance
 from muninnx.models.mlp import VelocityMLP
 from muninnx.models.traj_backbones import load_traj_model
 from muninnx.utils.misc import load_checkpoint
@@ -24,11 +24,20 @@ class Task:
     D: int
     H: int
     name: str
+    Dx: int = None            # conditional tasks: the first Dx coordinates are the plan, the rest the condition
+    context: object = None    # conditional tasks: context(n, generator) -> (n, D - Dx) conditions
 
     def noise(self, n, device, generator=None):
-        return torch.randn(n, self.D, device=device, generator=generator)
+        """Initial states. For conditional tasks: Gaussian noise for the plan, a random context (from the
+        data) for the frozen condition coordinates, so every script gets conditioned samples unchanged."""
+        if self.context is None:
+            return torch.randn(n, self.D, device=device, generator=generator)
+        x = torch.randn(n, self.Dx, device=device, generator=generator)
+        return torch.cat([x, self.context(n, generator)], dim=1)
 
     def dist(self, a, b):
+        if self.Dx is not None:
+            a, b = a[:, : self.Dx], b[:, : self.Dx]
         return flat_distance(a, b, self.H)
 
     @torch.no_grad()
@@ -48,6 +57,14 @@ class Task:
 
 def load_task(ckpt, device):
     cfg = torch.load(ckpt, map_location="cpu")["cfg"]
+    if "arch" in cfg and cfg["model"].get("cond_dim", 0):  # conditional Maze2D planner
+        from muninnx.data.maze2d import Maze2DWindows, window_context
+        model, cfg = load_traj_model(ckpt, device)
+        ds = Maze2DWindows(cfg["dataset"].split("-")[1], H=model.H, device=device)
+        ctx = lambda n, g=None: window_context(ds.sample(n, generator=g))
+        Dx = model.H * model.dim
+        return Task(CondFlatWrapper(model).eval(), D=Dx + model.cond_dim, H=model.H,
+                    name=f"{cfg['dataset']}_{cfg['arch']}_cond", Dx=Dx, context=ctx)
     if "arch" in cfg:  # trajectory backbone
         model, cfg = load_traj_model(ckpt, device)
         return Task(FlatWrapper(model).eval(), D=model.H * model.dim, H=model.H, name=f"traj_{cfg['arch']}")
