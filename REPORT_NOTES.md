@@ -9,7 +9,7 @@ Running log of experiments: setup, results and interpretation. `runs/` holds the
 
 ---
 
-## Key findings (as of 2026-11-21)
+## Key findings (as of 2026-11-24)
 
 1. **Muninn on velocity + Euler does not beat FewSteps.** At matched mean NFE, uniform Euler
    with fewer steps has a 5–15× smaller E[d] on both toys (E0, E1, E2).
@@ -68,6 +68,13 @@ Running log of experiments: setup, results and interpretation. `runs/` holds the
    up to $1000\,t$). Higher-order FewSteps then converges erratically and adaptive oracles look
    4–9× better than they are. Retrained with batch 16384 (`runs/toy_8gaussians_b16k`, ratio 1.20)
    the effect disappears.
+14. **The certificate gap is generic, but the paper's DDPM weights hide it** (E14). On the paper's own
+   samplers (VP $\varepsilon$-model, DDPM / DDIM updates with their $K_t, L'_t$), an oracle shows the
+   per-sample certificate failing for 1.3–4.4% (DDPM) and 1.9–6.9% (DDIM) of samples, versus 35–79%
+   for FM + Euler. Their weights over-count propagation 5–25× for typical early errors (true flow
+   Jacobian $/\prod K$ median 0.04–0.19 at step 5) and under-count it only on basin boundaries
+   (p99 ≈ 5–8, max $10^2$–$10^3$). Real Muninn on DDPM/DDIM is valid ($\hat p_{\text{viol}} \le 0.004$)
+   but uses 98–100 of 100 NFE. See THEORY_NOTES §7.
 
 **Implication.** (a) *Validity*: the sensitivity weights must account for the flow's
 amplification, or calibration must target the final d directly (CertFew already does).
@@ -102,6 +109,8 @@ None of the conclusions below change if the probe is counted; it only makes Muni
 | `runs/toy_8gaussians` | 8gaussians | 20k | 1024 | — | trained by Mamane |
 | `runs/toy_checkerboard_staircase` | buggy "checkerboard" (overlapping strips) | 30k | 16384 | ~2.83 | **superseded**, see E1 |
 | `runs/toy_checkerboard` | checkerboard (fixed, 8 squares on [-4,4]²) | 30k | 16384 | ~3.35 | GPU data gen, TF32 |
+| `runs/toy_8gaussians_b16k` | 8gaussians | 30k | 16384 | ~4.06 | smooth-in-$t$ retrain (finding 13), used in E9 |
+| `runs/ddpm_checkerboard` | checkerboard, **VP diffusion** ($\varepsilon$-pred., cosine, $T=100$) | 30k | 16384 | ~0.594 | E14 only |
 
 ```bash
 python scripts/train_toy.py --dataset checkerboard --iters 30000 --batch 16384
@@ -223,9 +232,11 @@ measure G_k = ‖Δx_N‖ / ‖δ‖. The Euler bound assumes G_k ≡ 1.
 | 94 | 1.05 / 1.06 / 1.07 / 1.7 | 1.05 / 1.05 / 1.06 / 1.1 |
 
 **Interpretation**
-- The true per-step map is x ↦ x + Δ·v(x), so K_k = ‖I + Δ·∂v/∂x‖, not 1. The paper's Assumption 1
-  treats v as an input independent of x. That holds at the reuse step itself, but not at the
-  recompute steps that follow it.
+- The true per-step map is x ↦ x + Δ·v(x), so K_k = ‖I + Δ·∂v/∂x‖, not 1. The paper's constants
+  (K_k = 1 for Euler) are computed with v held fixed, and the last equality of their Eq. (1)
+  evaluates the network at the cached state instead of the full one, which drops the term
+  v(x_full) − v(x_cached) at every step, recompute steps included (precise location and quotes:
+  [THEORY_NOTES.md](THEORY_NOTES.md) §3; correction of 2026-11-24).
 - The amplification is **heavy-tailed and early**: samples near the boundary between modes
   (which square / which Gaussian they end up in) amplify perturbations by 100–900×. Late
   steps (k ≥ 80) are close to the assumed value of 1.
@@ -579,6 +590,83 @@ uncertified p95 error vs NFE on calibration chains).
   the current state (the future is unknown), and (iii) conservative calibration of both. On these
   toys that would at best tie with certified AB2.
 
+### E14 — The certificate gap on the paper's own samplers (DDPM / DDIM) (2026-11-24)
+```bash
+python scripts/train_ddpm_toy.py --dataset checkerboard          # VP eps-model, cosine schedule, T = 100
+python scripts/e14_diffusion_check.py                            # n_oracle 20000, n_cal 4000, n_test 50000
+```
+**Question.** Is the gap found in E7 specific to flow matching, and why did the paper not see it?
+(Derivation and discussion: [THEORY_NOTES.md](THEORY_NOTES.md) §7.)
+
+**Setup.** A VP diffusion model ($\varepsilon$-prediction, same MLP, cosine schedule, $T = 100$,
+batch 16384, 30k iters; `runs/ddpm_checkerboard`, samples in `samples.png`) sampled with the
+paper's exact updates (`muninnx/diffusion/ddpm.py`): DDPM (stochastic, paired chains share the
+sampler noise) and DDIM (deterministic), with their constants
+$K_t = 1/\sqrt{\alpha_t}$, $L'_t$ from their Propositions 2–3. Compared with the FM checkerboard
+model + Euler, $N = 100$. For each sampler:
+1. **Oracle check of the paper's certificate.** Oracle reuse (most-recent-recompute cache; reuse
+   iff $L_t\lVert \mathrm{out}(\tau^{\text{full}}_t) - \text{cache}\rVert \le$ remaining budget; max
+   lag 10; forbidden 5/5) paired with the full chain. Per sample, the paper's certificate is
+   $B_{\text{claim}} = \sum_{t\in\mathcal R} L_t \lVert \mathrm{out}(\tau^{\text{full}}_t) - \tilde u_t\rVert$
+   (reuse steps only, their definition of $e_t$); the sanity bound $B_{\text{all}}$ is the same
+   sum over *all* steps, which their Eq. (1) does justify.
+2. **Slack of their weights**: true flow Jacobian $\lVert A_{N-1}\cdots A_{k+1}\rVert$ with
+   $A_j = K_j I + c_j\, \partial\mathrm{out}/\partial x$, divided by their $\prod_{j>k} K_j$.
+3. **Real Muninn** (our staleness-aware calibration, $\alpha = 0.05$) on 50k test samples.
+
+**Oracle: fraction of samples with $d \le B_{\text{claim}}$** ($B_{\text{all}}$ holds for 100% everywhere)
+
+| oracle budget $\eta$ | FM + Euler | VP + DDPM | VP + DDIM |
+|---|---|---|---|
+| 0.05 | 0.210 | 0.956 | 0.981 |
+| 0.1 | 0.217 | 0.969 | 0.974 |
+| 0.3 | 0.445 | 0.978 | 0.946 |
+| 0.5 | 0.627 | 0.983 | 0.931 |
+| 1.0 | 0.652 | 0.987 | 0.969 |
+
+Median $d/B_{\text{claim}}$: FM 0.94–1.59, DDPM 0.05–0.16, DDIM 0.20–0.43. The DDPM oracle reuses
+only 5–7 steps (the early $L_t$ are huge), DDIM 7–77, FM 17–82.
+
+**True flow Jacobian / paper's $\prod K$** (median / p99 / max)
+
+| step $k$ | FM + Euler | VP + DDPM | VP + DDIM |
+|---|---|---|---|
+| 5 | 2.32 / 20.7 / 1111 | 0.04 / 0.6 / 75 | 0.19 / 1.7 / 534 |
+| 20 | 2.35 / 21.4 / 1133 | 0.35 / 5.1 / 606 | 0.54 / 4.8 / 1519 |
+| 40 | 1.82 / 16.5 / 752 | 0.62 / 8.3 / 906 | 0.73 / 6.2 / 1690 |
+| 60 | 1.44 / 7.9 / 167 | 0.72 / 6.9 / 437 | 0.85 / 4.7 / 780 |
+| 80 | 1.23 / 2.5 / 10 | 0.98 / 3.1 / 36 | 0.99 / 2.4 / 39 |
+
+**Real Muninn ($\alpha = 0.05$, 50k test samples)**
+
+| $\eta$ | FM + Euler: NFE / $\hat p_{\text{viol}}$ | DDPM: NFE / $\hat p_{\text{viol}}$ | DDIM: NFE / $\hat p_{\text{viol}}$ |
+|---|---|---|---|
+| 0.05 | 97.0 / 0.008 | 100.0 / 0.000 | 99.0 / 0.0003 |
+| 0.1 | 94.0 / 0.020 | 99.0 / 0.003 | 99.0 / 0.0004 |
+| 0.3 | 82.0 / **0.059** | 99.0 / 0.002 | 98.0 / 0.0003 |
+| 0.5 | 70.6 / **0.078** | 99.0 / 0.002 | 98.0 / 0.0002 |
+| 1.0 | 41.9 / 0.038 | 98.3 / 0.004 | 97.8 / 0.0003 |
+
+Plot: `runs/ddpm_checkerboard/e14/e14.png` (left: oracle fraction $d \le B_{\text{claim}}$; right:
+true flow Jacobian / $\prod K$ vs step).
+
+**Interpretation**
+- **The gap is generic.** On the paper's own samplers the per-sample certificate fails for a few
+  percent of samples even with exact error knowledge; the bound over all steps never fails. So the
+  missing piece is exactly the recompute-step (drift) terms, for diffusion as for FM.
+- **Their weights carry most of the missing term as slack.** Treating $\varepsilon$ as fixed,
+  $K_t = 1/\sqrt{\alpha_t} > 1$, while the true step contracts for settled samples (THEORY_NOTES §7):
+  for a typical early error the paper over-counts propagation 5–25×. The certificate therefore
+  fails only on basin-boundary samples, where the true propagation exceeds $\prod K$ by up to
+  $10^2$–$10^3$. With FM + Euler, $K = 1$ has no slack and the median ratio is already > 1.
+- **Why their experiments looked valid.** A per-sample failure rate of a few percent, combined
+  with the median slack ($d$ is typically 5–20× below the certificate), keeps $P(d > \eta)$ well
+  below $\alpha$; and their 150-run evaluations could not detect a violation of a few points anyway.
+- **Valid, but not useful here.** On DDPM/DDIM, real Muninn keeps $\hat p_{\text{viol}} \le 0.004$
+  but uses 98–100 of 100 NFE: the same slack that hides the gap makes almost every reuse too
+  expensive. (The paper reports 6.5× fewer evaluations on its tasks; our toy, schedule and $T$
+  differ, so this is not a contradiction, but it shows the trade-off.)
+
 ---
 
 ## Open questions
@@ -600,7 +688,6 @@ uncertified p95 error vs NFE on calibration chains).
 | E11 | **Realistic $G$-aware extrapolation**: predicted error + predicted $G$ + probe cost, certified end-to-end | Only if E10 is positive. Target: beat certified AB2 at $\eta \le 0.05$ including probe cost. |
 | E12 | Coarser base grid ($N = 50$) / larger max_lag for the E9 oracle | Removes the 10-NFE floor; does the ceiling grow at loose $\eta$? |
 | E13 | Fix (a) for the record: conformal bound on $h\lVert G\rVert$ in the per-step certificate | Only if the per-step certificate is wanted for the write-up; expected very conservative. |
-| E14 | Same E7 check on a DDIM / VP-path sampler | Is the certificate gap generic (not FM-specific)? |
 | E15 | **Adaptive step size on an AB2 base** (classical embedded error estimate), certified end-to-end | Classical per-sample adaptivity as a baseline for E11. |
 | E16 | **Non-uniform FewSteps** grid (more steps where $\mathbb E[\varepsilon]$ is large) | Captures time-dependent difficulty without per-sample decisions. |
 | E17 | Ablations: literal paper rule (max_lag = 1, score vs $F_{k-1}$), per-lag $U$, forbid sizes | Completes GUIDE Finding 1 (a) and the M3 ablations. |
@@ -619,3 +706,5 @@ uncertified p95 error vs NFE on calibration chains).
 - 2026-11-21 `runs/` is now tracked in git (toy checkpoints, `results.json`, plots: ~7 MB), so every
   number in this file can be checked without rerunning. Heavy future artefacts must be ignored
   explicitly in `.gitignore`.
+- 2026-11-24 `muninnx/diffusion/ddpm.py` (VP schedule, DDPM/DDIM solvers with the paper's $K_t, L'_t$) and `scripts/train_ddpm_toy.py` for E14.
+- 2026-11-24 THEORY_NOTES §3/§7 corrected: the flaw is the last equality of the paper's Eq. (1) (network evaluated at the cached state instead of the full state), not Assumption 1; their $e_t$ is defined at the cached state. Page references added. No numbers change.

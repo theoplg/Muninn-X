@@ -108,23 +108,70 @@ checkerboard, where the deviations are larger and the bound is tight (median $d/
 
 ## 3. What the paper does, and where it breaks
 
-The paper's Assumption 1 bounds the step map $\Phi_k(x, v)$ separately in its two arguments:
+Page references are to `Muninn.pdf` (PDF page index) and `muninn_appendices.pdf`; maths is
+transcribed from the PDF. The paper uses diffusion notation: time runs backwards ($t: T \to 1$),
+$\varepsilon_\theta$ is the network, $\tilde\varepsilon_t$ the value the cached chain actually uses.
+
+**The definitions are fine** (p. 3, left column, "Error variables"): "the trajectory drift
+$\Delta_t := \tau_t^{\text{full}} - \tilde\tau_t$ and the denoiser mismatch
+$e_t := \varepsilon_\theta(\tilde\tau_t, t, c) - \tilde\varepsilon_t$". Note that $e_t$ is evaluated
+**at the cached state**, so $e_t = 0$ at recompute steps by definition. It is exactly our injected
+error $e_k$ of §1.
+
+**Assumption 1 is fine** (p. 3): for fixed sampler noise,
 
 $$
-\lVert \Phi_k(x, v) - \Phi_k(x', v') \rVert \le K_k \lVert x - x' \rVert + L'_k \lVert v - v' \rVert .
+\lVert \Phi_t(\tau, \varepsilon, \xi_t) - \Phi_t(\tau', \varepsilon', \xi_t) \rVert \le K_t \lVert \tau - \tau' \rVert + L'_t \lVert \varepsilon - \varepsilon' \rVert ,
 $$
 
-For Euler, $\Phi_k(x, v) = x + h v$ gives $K_k = 1$ and $L'_k = h$, hence $L_k = h \prod_{j>k} K_j = h$ and
+with $(K_t, L'_t)$ read off the update coefficients with $\varepsilon$ held fixed ("$\Phi_t$ is affine in
+$\tau_t$ and $\varepsilon_t$, so $K_t$ and $L'_t$ follow directly from the update coefficients").
+For Euler, $\Phi_k(x, v) = x + h v$ gives $K_k = 1$ and $L'_k = h$.
+
+**The flaw is the last equality of Eq. (1)** (p. 3, right column):
 
 $$
-d \;\le\; \sum_{k} h\, \lVert e_k \rVert \qquad \text{(paper)} .
+\lVert\Delta_{t-1}\rVert \le K_t \lVert \tau_t^{\text{full}} - \tilde\tau_t\rVert + L'_t \big\lVert \varepsilon_\theta(\tau_t^{\text{full}}, t, c) - \tilde\varepsilon_t \big\rVert
+\overset{\text{(!)}}{=} K_t\lVert\Delta_t\rVert + L'_t\lVert e_t\rVert .
 $$
 
-The flaw: **$v$ is treated as a free input, but at every step it is the network evaluated at the
-current state**, $v = v(\tilde x_k)$. Treating $\Phi$ as a function of $x$ alone, the true one-step
-Lipschitz constant is $\lVert I + h\, \partial v/\partial x \rVert$, not $1$. Equivalently, the paper's
-recursion drops the drift term $h \bar J_k \Delta_k$, which is present at *every* step (recompute
-steps included). The paper bound is exactly the corrected bound with $M$ replaced by $I$.
+The inequality is correct. The equality is not: the left term evaluates the network **at the full
+state**, $e_t$ **at the cached state**, and
+
+$$
+\varepsilon_\theta(\tau_t^{\text{full}}) - \tilde\varepsilon_t
+= \underbrace{\big[\varepsilon_\theta(\tau_t^{\text{full}}) - \varepsilon_\theta(\tilde\tau_t)\big]}_{\text{drift term, dropped}} + e_t ,
+$$
+
+so the two coincide only when $\Delta_t = 0$. The dropped bracket is the drift propagation of §2
+($h \bar J_k \Delta_k$ in our notation). It is nonzero at **every** step once the chains have
+separated, recompute steps included; only because it was dropped does "$e_t = 0$ at recompute
+steps" look like "recompute steps add no error".
+
+**Everything after inherits it.** The unrolling (p. 3, "a simple induction shows",
+Eq. (2)), the deviation bound $d \le \sum_t \Gamma L_t \lVert e_t\rVert$ (p. 4, Eqs. (4)–(5)), the
+global risk argument restricting the sum to reuse steps,
+"$d(\tau_0^{\text{full}}, \tilde\tau_0) \le \sum_{t\in\mathcal R} c_t(e_t)$ (from (5))" (p. 6), and
+the appendix proof, which takes Eq. (1) as a hypothesis: "Suppose Assumption 1 […] holds and
+yields the local recursion […] (94) which is Eq. (1) in the main paper" (appendix p. 36).
+
+**A second instance of the same swap** (p. 6 and appendix p. 28). The risk argument states that
+"whenever Muninn reuses at step $t$, the realized denoiser error magnitude $\lVert e_t\rVert$
+coincides with the latent potential reuse error $\epsilon_t$". But the calibration label
+(Algorithm 2, line 18) is $\epsilon_t = \lVert \hat\varepsilon_t^{\text{full}} - \tilde\varepsilon_t^{\text{cand}}\rVert / \sqrt{Hd}$:
+network at the full state, minus a cached value that is itself a full-chain output (lines 22–23).
+At deployment, $e_t$ is the network at the cached state minus a value computed earlier on the
+drifted chain. They coincide only without drift.
+
+In our notation (Euler, forward time) the paper's bound is
+
+$$
+d \;\le\; \sum_{k} h\, \lVert e_k \rVert \qquad \text{(paper)} ,
+$$
+
+i.e. exactly the corrected bound of §2 with $M_{k+1\to N}$ replaced by $I$.
+E7 tests this version ($e_k$ at the cached state, as in their Eq. (5)); E14 tests the
+calibration-label version (network at the full state). Both fail.
 
 - If the flow **expands** ($\lVert M \rVert > 1$), the paper bound is too small → the certificate is invalid.
 - If the flow **contracts** ($\lVert M \rVert < 1$), the paper bound is valid but loose.
@@ -214,3 +261,87 @@ grid can mimic. Whether it pays off is an empirical question (oracle test with t
 | Tweedie formula | network $\partial v/\partial x$ vs Monte-Carlo posterior covariance | $\lambda_{\max}$ correlation 0.98–1.00 for $t \in [0.3, 0.7]$, median rel. error 3–17% |
 | Contraction inside narrow modes, sign flip at $t = 1/(1+s^2)$ | 8gaussians ($s = 0.5$ → flip at $t = 0.8$) | $t = 0.7$: predicted $\lambda = -0.59$, measured median $-0.51$; $t = 0.85$: predicted $+0.31$, measured $+0.34$ |
 | Amplification on basin boundaries | map of $\lVert G \rVert$ at $t = 0.2$ | high-$\lVert G \rVert$ samples lie exactly on the 8 rays / the checkerboard cell boundaries |
+
+## 7. Why the paper did not see it
+
+The gap of §3 does not depend on flow matching: it is the last equality of their Eq. (1), which
+replaces $\varepsilon_\theta(\tau^{\text{full}}_t)$ by $\varepsilon_\theta(\tilde\tau_t)$ and so drops the
+drift term $\varepsilon_\theta(\tau^{\text{full}}_t) - \varepsilon_\theta(\tilde\tau_t)$, for any sampler.
+Their calibration does not catch it either: in Algorithm 2 (appendix p. 28) the cached value is
+itself a *full-chain* output, so the labels
+$\lVert \hat\varepsilon^{\text{full}}_t - \hat\varepsilon^{\text{full}}_{\text{anchor}} \rVert$ contain no drift.
+
+So why does their method look valid? Three reasons, from strongest evidence to weakest.
+
+**(a) Their validation cannot detect violations of a few percentage points** (read from the
+paper). Every reported $\hat p_{\text{viol}}$ (0.028–0.049 in Table I) comes from **150 runs**
+with a Wilson interval (Appendix C). For 7 violations out of 150 the 95% interval is about
+$[0.023, 0.093]$. The probability that a 150-run estimate lands at or below $0.05$ is
+
+| true violation rate | 0.050 | 0.059 (our checkerboard, $\eta = 0.3$) | 0.083 (our checkerboard, $\eta = 0.5$) |
+|---|---|---|---|
+| $P(\hat p_{150} \le 0.05)$ | 0.52 | 0.34 | 0.06 |
+
+so a method violating its guarantee like ours did on checkerboard at $\eta = 0.3$ would still look
+valid in a third of 150-run evaluations. The per-sample claim $d \le \hat D = \sum_{t\in\mathcal R}\hat c_t$
+is only shown as a binned reliability plot (their Fig. 10, "conservative, below the diagonal").
+A binned average can sit below the diagonal while many samples violate it: on our 8gaussians the
+median $d/B$ was $0.79$ while the per-sample bound failed for 22% of samples (E7).
+
+**(b) Their DDPM weights over-count propagation for most samples, and under-count it only on
+basin boundaries** (derivation below; measured in E14). Their $K_t$ is computed with $\varepsilon$ held fixed, so
+$K_t = 1/\sqrt{\alpha_t} > 1$ and
+
+$$
+L_t = L'_t \prod_{j<t} K_j = \frac{\beta_t}{\sqrt{\alpha_t}\sqrt{1-\bar\alpha_t}} \cdot \frac{1}{\sqrt{\bar\alpha_{t-1}}}
+= \frac{\beta_t}{\sqrt{\bar\alpha_t}\,\sqrt{1-\bar\alpha_t}} ,
+$$
+
+which is very large for early steps ($\bar\alpha_t \to 0$), i.e. in the noisy phase where samples
+choose their mode. The step's *true* Jacobian also counts $\partial\varepsilon_\theta/\partial\tau$.
+With Tweedie for the VP path, $\varepsilon_\theta(\tau) = \big(\tau - \sqrt{\bar\alpha_t}\, m(\tau)\big)/\sqrt{1-\bar\alpha_t}$
+with $\partial m/\partial\tau = \frac{\sqrt{\bar\alpha_t}}{1-\bar\alpha_t}\Sigma$, so the DDPM mean update has Jacobian
+
+$$
+\frac{\partial \tau_{t-1}}{\partial \tau_t}
+= \frac{1}{\sqrt{\alpha_t}}\left[\Big(1 - \frac{\beta_t}{1-\bar\alpha_t}\Big) I + \frac{\beta_t\,\bar\alpha_t}{(1-\bar\alpha_t)^2}\,\Sigma\right],
+$$
+
+which for a settled posterior ($\Sigma \approx 0$) equals $\sqrt{\alpha_t}\,\frac{1-\bar\alpha_{t-1}}{1-\bar\alpha_t} < 1$:
+a contraction, while the paper charges $1/\sqrt{\alpha_t} > 1$. The same expression exceeds
+$1/\sqrt{\alpha_t}$ only along directions with $\sigma^2 > (1-\bar\alpha_t)/\bar\alpha_t$, the
+VP analogue of the condition in §4. So their weights carry a large, systematic slack that can
+absorb the missing drift term unless a sample sits on a basin boundary. With Euler for FM,
+$K = 1$ and $L_k = h$ are flat in time, so there is no such slack, and the gap shows directly.
+
+**(c) Conservative per-step bounds and less multimodal tasks** (hypothesis). Per-step $U_t$ at
+level $\alpha/|T_{\text{cache}}|$ (≈ 99.9th percentile) plus the triangle inequality add more
+slack (this alone hid the gap on our 8gaussians). Their planners are conditioned on start and
+goal (inpainting), which removes much of the multimodality, so fewer samples sit on a boundary
+and the tail of $\lVert G\rVert$ is smaller than on checkerboard, which is close to a worst case
+(flat data, expanding everywhere, many boundaries).
+
+**Separately, usefulness.** Their FewSteps baseline is weak: Diffuser-style DDPM models trained for a
+fixed $T$-step stochastic schedule degrade with fewer steps (their Table V: $T' = 90$ already drops
+the task score from 68.7 to 56.1 with $\hat p_{\text{viol}} = 0.17$). With FM the paths are nearly
+straight and FewSteps (especially AB2) is strong. This explains the speed-up gap between their
+results and ours independently of validity.
+
+**What E14 found** (VP $\varepsilon$-model on checkerboard, their exact DDPM / DDIM updates and
+$(K_t, L'_t)$, cosine schedule, $T = 100$; see REPORT_NOTES E14). Both explanations are right:
+
+- **The gap is generic.** With an oracle that knows the true errors, the paper's per-sample
+  certificate $d \le \sum_{t\in\mathcal R} L_t \lVert \varepsilon_\theta(\tau^{\text{full}}_t) - \tilde\varepsilon_t\rVert$
+  fails for **1.3–4.4%** of samples with DDPM and **1.9–6.9%** with DDIM (and 35–79% with FM +
+  Euler). The same sum taken over *all* steps, which their Eq. (1) does justify, holds for 100%.
+- **Their weights carry a large slack, as predicted in (b).** The ratio true flow Jacobian
+  $/ \prod K$ has median **0.04** (DDPM) / **0.19** (DDIM) for an error made at step 5, rising
+  to ~1 near the data: for a typical early error the paper over-counts propagation 5–25×. The p99
+  at steps 20–60 is still ≈ 5–8 and the maximum reaches $10^2$–$10^3$: on basin boundaries the paper *under*-counts,
+  and those are the samples that break the certificate. With FM + Euler the median ratio is
+  already 1.1–2.4 (no slack anywhere).
+- **Real Muninn is valid on DDPM / DDIM, but because it barely caches.** With the same
+  calibration as on FM, test $\hat p_{\text{viol}} \le 0.004$ on 50k samples for every $\eta$,
+  but it uses 98–100 NFE out of 100: the large early weights $L_t$ make almost every reuse too
+  expensive. On FM + Euler the same code reuses much more and violates $\alpha$ ($0.059$ and
+  $0.078$ at $\eta = 0.3, 0.5$).
