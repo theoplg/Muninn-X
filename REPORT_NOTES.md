@@ -9,7 +9,7 @@ Running log of experiments: setup, results and interpretation. `runs/` holds the
 
 ---
 
-## Key findings (as of 2026-11-24)
+## Key findings (as of 2026-11-25)
 
 1. **Muninn on velocity + Euler does not beat FewSteps.** At matched mean NFE, uniform Euler
    with fewer steps has a 5–15× smaller E[d] on both toys (E0, E1, E2).
@@ -75,6 +75,14 @@ Running log of experiments: setup, results and interpretation. `runs/` holds the
    Jacobian $/\prod K$ median 0.04–0.19 at step 5) and under-count it only on basin boundaries
    (p99 ≈ 5–8, max $10^2$–$10^3$). Real Muninn on DDPM/DDIM is valid ($\hat p_{\text{viol}} \le 0.004$)
    but uses 98–100 of 100 NFE. See THEORY_NOTES §7.
+15. **A real sampler recovers part of the adaptive gain, from free signals only** (E10). Trained offline on
+   oracle targets, a small regressor on signals any sampler has for free (time, lag, how fast the
+   computed velocity and the predicted endpoint changed between the last computes) beats certified
+   AB2 by **1.17–1.28×** at $\eta \in \{0.01, 0.05\}$ (checkerboard) and **1.24×** at $\eta = 0.01$
+   (8gaussians), stable over 3 seeds, $\hat p_{\text{viol}} \le 0.045$ everywhere. It ties or loses
+   elsewhere. The amplification $\lVert G\rVert$ itself is predictable (rank corr. 0.73–0.85 from free
+   signals, 0.98–0.99 from probe features), but adding the probe never pays on the MLP: its cost
+   (≈ 0.08 NFE per extrapolated step) exceeds the information it brings.
 
 **Implication.** (a) *Validity*: the sensitivity weights must account for the flow's
 amplification, or calibration must target the final d directly (CertFew already does).
@@ -667,6 +675,93 @@ true flow Jacobian / $\prod K$ vs step).
   expensive. (The paper reports 6.5× fewer evaluations on its tasks; our toy, schedule and $T$
   differ, so this is not a contradiction, but it shows the trade-off.)
 
+### E10 — Can a real sampler predict the oracle's cost? (2026-11-25)
+```bash
+python scripts/e10_predictability.py --ckpt runs/toy_checkerboard/model.pt --seed 0   # seeds 0, 1, 2
+python scripts/e10_predictability.py --ckpt runs/toy_8gaussians_b16k/model.pt --seed 0
+```
+**Question.** E9's oracle beat certified AB2 by 1.1–1.35× only because it knew, for free, (i) the
+true extrapolation error and (ii) its amplification $\lVert G\rVert$ (large near basin boundaries).
+Can signals that a real sampler has at step $k$ predict this well enough to keep a gain, once the
+probe cost and the certification are paid?
+
+**Method** (`muninnx/cache/extrap_policy.py`, same extrapolate-or-compute AB2-100 loop as E9;
+sanity checks: "never extrapolate" = AB2-100 exactly, oracle rule = E9 oracle exactly).
+1. **Training set**: 4000 "ghost" chains on separate noise, extrapolating at random (prob. 0.7,
+   lag ≤ 10), i.e. 392k (step, sample) rows. Targets: $\log\lVert e_k\rVert$,
+   $\log\lVert G_{k+1\to N}\rVert$, and the oracle cost $\log h\lVert G_{k+1\to N}e_k\rVert$.
+2. **Signal tiers** (features known before deciding at step $k$):
+   - *free*: $t$, lag, time since the last compute, $\lVert v\rVert$, the rate of change of the computed
+     velocity and of the **predicted endpoint** $\hat x_1 = x + (1-t)v$ between the last two computes, a
+     curvature estimate from the last three, and first/second-order extrapolation-size proxies;
+   - *probe score*: free + Muninn's relative-L1 probe change since the last compute;
+   - *probe features*: free + score + the full 256-d probe vector;
+   - *position*: free + $x_k$ (2D only: an optimistic bound, not a scalable signal).
+3. **Predictors**: one MLP (2 × 256) per tier on $\log$ cost; held-out (20%) Spearman.
+   A second MLP per tier on $\log\lVert G\rVert$ alone measures whether the amplification is predictable.
+4. **Decision**: extrapolate iff predicted cost $\le \tau$; $\tau$ certified exactly as in E9
+   (Bonferroni LTT over 32 values, exact-ODE reference, $\alpha = 0.05$, 4000 cal / 50k test chains).
+   **Cost** = NFE $+ \; 0.079 \times$ (extrapolated steps) for the probe tiers: the probe is the first
+   layer, so it is free on computed steps.
+5. **3 seeds** (noise, ghost decisions, predictor init); the models are fixed.
+
+**Held-out prediction quality** (Spearman, mean over 3 seeds)
+
+| tier | checkerboard: cost | checkerboard: $\lVert G\rVert$ alone | 8gaussians: cost | 8gaussians: $\lVert G\rVert$ alone |
+|---|---|---|---|---|
+| free | 0.752 | 0.845 | 0.805 | 0.727 |
+| + probe score | 0.760 | 0.891 | 0.815 | 0.772 |
+| + probe features | 0.805 | 0.980 | 0.868 | 0.993 |
+| + position | 0.767 | 0.954 | 0.823 | 0.872 |
+
+**Certified mean cost** (NFE + probe; mean over 3 seeds, all seed-to-seed sd ≤ 2.3; ratio = AB2 / method)
+
+| $\eta$ | AB2 | oracle | free | + probe score | + probe feat. | + position |
+|---|---|---|---|---|---|---|
+| *checkerboard* | | | | | | |
+| 0.005 | **42.0** | 40.5 | 64.1 (0.66×) | 66.7 (0.63×) | 47.8 (0.88×) | 56.7 (0.78×) |
+| 0.01 | 33.0 | 22.7 | **28.2 (1.17×)** | 34.1 (0.97×) | 35.2 (0.94×) | 28.4 (1.16×) |
+| 0.02 | 22.0 | 18.1 | **21.1 (1.04×)** | 27.3 (0.81×) | 27.5 (0.80×) | 21.2 (1.04×) |
+| 0.05 | 14.3 | 11.4 | **11.2 (1.28×)** | 18.2 (0.79×) | 19.4 (0.74×) | 11.4 (1.26×) |
+| 0.1 | 10.3 | 10.0 | **10.0 (1.03×)** | 17.1 | 17.1 | 10.0 |
+| 0.2 | **8.0** | 10.0 | 10.0 (0.80×) | 17.1 | 17.1 | 10.0 |
+| *8gaussians (smooth)* | | | | | | |
+| 0.005 | 53.7 | 40.0 | 61.1 (0.88×) | 61.9 (0.87×) | **48.1 (1.12×)** | 60.0 (0.90×) |
+| 0.01 | 36.0 | 24.5 | **29.1 (1.24×)** | 35.1 (1.02×) | 37.2 (0.97×) | 29.9 (1.20×) |
+| 0.02 | **21.0** | 16.2 | 22.0 (0.96×) | 28.6 (0.73×) | 26.3 (0.80×) | 19.3 (1.10×) |
+| 0.05 | **12.0** | 12.0 | 15.3 (0.79×) | 21.3 | 19.4 | 14.5 |
+| 0.1 | **7.3** | 10.0 | 11.2 | 18.1 | 17.3 | 10.7 |
+
+All certified rows: test $\hat p_{\text{viol}} \le 0.045$. (The oracle is slightly better than in E9,
+e.g. 22.7 vs 25.8 at $\eta = 0.01$ on checkerboard, because the threshold grid is finer: 32 vs 16 values.)
+
+Plots: `runs/toy_*/e10/seed*/e10.png` (left: certified cost vs $\eta$; right: held-out Spearman of the
+cost predictor and of a dedicated $\lVert G\rVert$ predictor).
+
+**Interpretation**
+- **A realistic policy beats certified AB2, but only in a band of tolerances.** With free signals only,
+  the gain is 1.17–1.28× at $\eta = 0.01$–$0.05$ on checkerboard and 1.24× at $\eta = 0.01$ on
+  8gaussians, i.e. roughly half of the oracle's gain (1.25–1.47× at the same $\eta$). It ties around
+  $\eta \approx 0.02$–$0.1$, and loses at very tight $\eta = 0.005$ (prediction errors force many
+  recomputes to stay certified) and at loose $\eta \ge 0.1$ (the 10-NFE floor of the 100-step base
+  grid with max_lag 10; AB2 needs 5–8).
+- **The amplification is predictable; it is the error part that limits the decisions.** A dedicated
+  predictor ranks $\lVert G\rVert$ well (0.73–0.85 from free signals, 0.98–0.99 from probe features),
+  but the decision needs the *product* of error and directional amplification, whose ranking only
+  reaches 0.75–0.87. Adding position (which pins $\lVert G\rVert$ down in 2D) does not improve the
+  decisions over the free tier, so the information about *where* the sample is was not the bottleneck.
+- **The probe does not pay on this backbone.** Probe features carry the most information
+  (best Spearman everywhere) but cost ≈ 0.08 NFE per extrapolated step, i.e. +7 NFE per sample at
+  ~90 extrapolations, which is larger than the whole gain. Only at $\eta = 0.005$ on 8gaussians does
+  the extra information win (1.12×). On deep backbones the probe is relatively cheaper (≈ 1 block
+  out of 10–30) and probably more informative, so this conclusion is MLP-specific.
+- **The useful signals are backbone-agnostic.** The free tier only uses the network's *outputs*
+  (velocity changes, endpoint drift), so it transfers unchanged to U-Nets or transformers.
+- **Honest scale of the result.** The best realistic policy is ~1.2× cheaper than certified AB2 at
+  a few tolerances on 2D toys, with an offline training cost (ghost chains + Jacobians) and a
+  per-$(\eta, \alpha)$ calibration. It is a real but modest gain; whether it grows where per-sample
+  difficulty varies more (multimodal trajectories, M1) is the open question.
+
 ---
 
 ## Open questions
@@ -684,14 +779,13 @@ true flow Jacobian / $\prod K$ vs step).
 ## Next experiments (planned)
 | id | experiment | hypothesis / what it decides |
 |---|---|---|
-| E10 | **Can $\lVert G\rVert$ be predicted from the current state?** Regress $\log\lVert G_{k+1\to N}\rVert$ on probe features / $(x_k, t_k)$ on calibration chains | Decides whether the E9 gain is reachable by a real method. If the probe cannot locate basin boundaries, the ceiling is unreachable. |
-| E11 | **Realistic $G$-aware extrapolation**: predicted error + predicted $G$ + probe cost, certified end-to-end | Only if E10 is positive. Target: beat certified AB2 at $\eta \le 0.05$ including probe cost. |
+| M0.5 | **Trajectory toy + other backbones**: synthetic multimodal 2D paths (left/right of an obstacle, length 32); temporal U-Net (Diffuser-style) and small transformer | Do E7/E14 (gap, amplification), E8/E9/E10 (certified comparison, realistic policy) transfer across backbones? Includes **feature caching** (recompute shallow blocks, reuse deep ones), the one regime an MLP cannot test. |
 | E12 | Coarser base grid ($N = 50$) / larger max_lag for the E9 oracle | Removes the 10-NFE floor; does the ceiling grow at loose $\eta$? |
 | E13 | Fix (a) for the record: conformal bound on $h\lVert G\rVert$ in the per-step certificate | Only if the per-step certificate is wanted for the write-up; expected very conservative. |
-| E15 | **Adaptive step size on an AB2 base** (classical embedded error estimate), certified end-to-end | Classical per-sample adaptivity as a baseline for E11. |
+| E15 | **Adaptive step size on an AB2 base** (classical embedded error estimate), certified end-to-end | Classical per-sample adaptivity: does a standard error estimator already match E10's learned policy? |
 | E16 | **Non-uniform FewSteps** grid (more steps where $\mathbb E[\varepsilon]$ is large) | Captures time-dependent difficulty without per-sample decisions. |
 | E17 | Ablations: literal paper rule (max_lag = 1, score vs $F_{k-1}$), per-lag $U$, forbid sizes | Completes GUIDE Finding 1 (a) and the M3 ablations. |
-| M1 | Maze2D | The place where per-sample difficulty may actually vary. Worth it if E10/E11 show the E9 gain is reachable, or as the final real-data check. |
+| M1 | Maze2D | The place where per-sample difficulty may actually vary. After M0.5: E10 shows a modest realistic gain on 2D toys; M1 tests it where per-sample difficulty varies most, and is the final real-data check. |
 | — | ~~x̂₁ reuse~~ | Dropped: provably identical to v reuse with Euler (E5). |
 
 ## Changelog of code affecting results
@@ -708,3 +802,4 @@ true flow Jacobian / $\prod K$ vs step).
   explicitly in `.gitignore`.
 - 2026-11-24 `muninnx/diffusion/ddpm.py` (VP schedule, DDPM/DDIM solvers with the paper's $K_t, L'_t$) and `scripts/train_ddpm_toy.py` for E14.
 - 2026-11-24 THEORY_NOTES §3/§7 corrected: the flaw is the last equality of the paper's Eq. (1) (network evaluated at the cached state instead of the full state), not Assumption 1; their $e_t$ is defined at the cached state. Page references added. No numbers change.
+- 2026-11-25 `muninnx/cache/extrap_policy.py` (generic extrapolate-or-compute AB2 loop with pluggable decisions and observable features) and `scripts/e10_predictability.py` for E10.
