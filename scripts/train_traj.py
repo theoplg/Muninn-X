@@ -1,24 +1,27 @@
-"""Train a flow-matching velocity backbone on the trajectory toy (M0.5).
+"""Train a flow-matching velocity backbone on trajectories: the trajectory toy (M0.5) or Maze2D (M1).
 
     python scripts/train_traj.py --arch unet
+    python scripts/train_traj.py --arch maze_unet --dataset maze-umaze --batch 1024 --iters 60000
 """
 import argparse
 import time
 
 import torch
 
+from muninnx.data.maze2d import Maze2DWindows
 from muninnx.data.traj2d import sample_traj
 from muninnx.fm.loss import fm_loss
 from muninnx.models.traj_backbones import ARCHS
 from muninnx.utils.misc import get_device, save_checkpoint, seed_all
 
-DEFAULTS = {"mlp": dict(lr=1e-3), "unet": dict(lr=3e-4), "transformer": dict(lr=3e-4)}
+DEFAULTS = {"mlp": dict(lr=1e-3), "unet": dict(lr=3e-4), "transformer": dict(lr=3e-4), "maze_unet": dict(lr=2e-4)}
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--arch", choices=list(ARCHS), required=True)
-    p.add_argument("--H", type=int, default=32)
+    p.add_argument("--dataset", default="traj2d", choices=["traj2d", "maze-umaze", "maze-medium", "maze-large"])
+    p.add_argument("--H", type=int, default=None, help="horizon (default: 32 for traj2d, Diffuser's for Maze2D)")
     p.add_argument("--iters", type=int, default=30000)
     p.add_argument("--batch", type=int, default=4096)
     p.add_argument("--lr", type=float, default=None)
@@ -35,18 +38,26 @@ def main():
     torch.set_float32_matmul_precision("high")
     torch.backends.cudnn.benchmark = True
     lr = args.lr or DEFAULTS[args.arch]["lr"]
-    model_cfg = {"H": args.H}
+    data_stats = None
+    if args.dataset == "traj2d":
+        H = args.H or 32
+        draw = lambda n: sample_traj(n, H=H, device=device)
+        model_cfg = {"H": H}
+    else:
+        ds = Maze2DWindows(args.dataset.split("-")[1], H=args.H, device=device)
+        H, draw, data_stats = ds.H, ds.sample, ds.stats()
+        model_cfg = {"H": H, "dim": ds.dim}
     model = ARCHS[args.arch](**model_cfg).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda i: min(1.0, (i + 1) / args.warmup) * 0.5 * (1 + torch.cos(torch.tensor(i / args.iters * 3.14159)).item()))
-    net = model if args.no_compile else torch.compile(model)  # fuses the many small ops of these small models
+    net = model if args.no_compile else torch.compile(model, dynamic=False)  # fuses the many small ops of these small models
     print(f"arch={args.arch} params={n_params / 1e6:.2f}M lr={lr} batch={args.batch} iters={args.iters} "
           f"compile={not args.no_compile} bf16={not args.no_bf16}")
     t0 = time.time()
     for it in range(1, args.iters + 1):
-        x1 = sample_traj(args.batch, H=args.H, device=device)
+        x1 = draw(args.batch)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=not args.no_bf16):  # training only; eval is fp32
             loss = fm_loss(net, x1)
         opt.zero_grad(set_to_none=True)
@@ -56,9 +67,10 @@ def main():
         sched.step()
         if it % 5000 == 0 or it == 1:
             print(f"it {it:6d}  loss {loss.item():.4f}  ({time.time() - t0:.0f}s)")
-    out = args.out or f"runs/traj_toy/{args.arch}/model.pt"
-    save_checkpoint(model, {"model": model_cfg, "arch": args.arch, "dataset": "traj2d", "args": vars(args),
-                            "n_params": n_params}, out)
+    default_dir = "runs/traj_toy" if args.dataset == "traj2d" else f"runs/{args.dataset.replace('-', '2d_')}"
+    out = args.out or f"{default_dir}/{args.arch}/model.pt"
+    save_checkpoint(model, {"model": model_cfg, "arch": args.arch, "dataset": args.dataset, "data_stats": data_stats,
+                            "args": vars(args), "n_params": n_params}, out)
     print(f"saved {out}")
 
 

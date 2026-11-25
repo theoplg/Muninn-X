@@ -168,7 +168,54 @@ class TrajTransformer(TrajBackbone):
         return h.mean(dim=1)
 
 
-ARCHS = {"mlp": TrajMLP, "unet": TrajUNet, "transformer": TrajTransformer}
+class MazeUNet(TrajBackbone):
+    """Configurable-depth temporal U-Net (Diffuser's maze2d setting: c = 32, mults = (1, 2, 4, 8)).
+    Same encode / core / decode split as TrajUNet: encode = input conv + first block at full resolution,
+    core = all down / mid / up levels, decode = last block (with the full-resolution skip) + output conv.
+    Like Diffuser it has two mid blocks at the deepest level (TrajUNet has one), so it is not TrajUNet's topology."""
+
+    def __init__(self, H=128, dim=6, c=32, mults=(1, 2, 4, 8), t_dim=128):
+        super().__init__()
+        assert H % 2 ** (len(mults) - 1) == 0, "H must be divisible by 2^(levels-1)"
+        self.H, self.dim = H, dim
+        ch = [c * m for m in mults]
+        self.time = TimeMLP(t_dim)
+        self.inp = nn.Conv1d(dim, ch[0], 5, padding=2)
+        self.enc = FiLMResBlock1d(ch[0], ch[0], t_dim)
+        self.downs = nn.ModuleList([nn.Conv1d(ch[i - 1], ch[i], 3, stride=2, padding=1) for i in range(1, len(ch))])
+        self.down_blocks = nn.ModuleList([FiLMResBlock1d(ch[i], ch[i], t_dim) for i in range(1, len(ch))])
+        self.mid = nn.ModuleList([FiLMResBlock1d(ch[-1], ch[-1], t_dim) for _ in range(2)])
+        self.ups = nn.ModuleList([nn.ConvTranspose1d(ch[i], ch[i - 1], 4, stride=2, padding=1) for i in range(len(ch) - 1, 0, -1)])
+        self.up_blocks = nn.ModuleList([FiLMResBlock1d(2 * ch[i - 1], ch[i - 1], t_dim) for i in range(len(ch) - 1, 1, -1)])
+        self.dec = FiLMResBlock1d(2 * ch[0], ch[0], t_dim)
+        self.out = nn.Sequential(nn.GroupNorm(8, ch[0]), nn.SiLU(), nn.Conv1d(ch[0], dim, 5, padding=2))
+
+    def encode(self, x, t):
+        temb = self.time(as_batch_time(t, x.shape[0], x.device))
+        return self.enc(self.inp(x.transpose(1, 2)), temb), temb
+
+    def core(self, h, temb):
+        z, skips = h, []
+        for dn, blk in zip(self.downs, self.down_blocks):
+            z = blk(dn(z), temb)
+            skips.append(z)
+        skips.pop()  # the deepest level feeds the mid blocks, not a skip
+        for blk in self.mid:
+            z = blk(z, temb)
+        for i, up in enumerate(self.ups):
+            z = up(z)
+            if i < len(self.up_blocks):
+                z = self.up_blocks[i](torch.cat([z, skips.pop()], dim=1), temb)
+        return z
+
+    def decode(self, hc, h, temb):
+        return self.out(self.dec(torch.cat([hc, h], dim=1), temb)).transpose(1, 2)
+
+    def pool(self, h):
+        return h.mean(dim=-1)
+
+
+ARCHS = {"mlp": TrajMLP, "unet": TrajUNet, "transformer": TrajTransformer, "maze_unet": MazeUNet}
 
 
 def load_traj_model(path, device):

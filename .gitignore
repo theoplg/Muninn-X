@@ -224,3 +224,6 @@ __marimo__/
 # Ignore heavy future artefacts explicitly instead, e.g.:
 runs/**/*.npz
 runs/**/*.ckpt
+
+# datasets (downloaded, not tracked)
+/data/
