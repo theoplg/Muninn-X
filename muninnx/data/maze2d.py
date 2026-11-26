@@ -18,9 +18,23 @@ HORIZONS = {"umaze": 128, "medium": 256, "large": 384}  # Diffuser's maze2d hori
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "data" / "minari"
 
 
+STREAM_CACHE = Path(__file__).resolve().parents[2] / "data" / "maze2d_streams"
+
+
 def load_stream(name):
     """Stitched stream (T, 6) float32 numpy: x, y, vx, vy, ax, ay. Action at step i is the one taken from
-    state i; the final state of the whole run (no action) is dropped."""
+    state i; the final state of the whole run (no action) is dropped. Cached as data/maze2d_streams/<name>.npy
+    (24 MB, loads instantly; enough to train and evaluate without the Minari dataset)."""
+    cache = STREAM_CACHE / f"{name}.npy"
+    if cache.exists():
+        return np.load(cache)
+    stream = _build_stream(name)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    np.save(cache, stream)
+    return stream
+
+
+def _build_stream(name):
     os.environ.setdefault("MINARI_DATASETS_PATH", str(DEFAULT_PATH))
     import minari
     d = minari.load_dataset(DATASETS[name])
