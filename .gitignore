@@ -227,3 +227,7 @@ runs/**/*.ckpt
 
 # datasets (downloaded, not tracked)
 /data/
+
+# job logs and intermediate checkpoints (kept on disk, not tracked)
+logs/
+runs/**/model_it*.pt

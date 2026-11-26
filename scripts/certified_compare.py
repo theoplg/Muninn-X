@@ -94,23 +94,28 @@ def main():
         "exact": {"euler": desc, "ab2": desc, "muninn": sorted(args.lambdas)},
         "euler": {"euler": [n for n in desc if n <= N], "ab2": desc, "muninn": sorted(args.lambdas)},
     }
-    samples_cal = {}
+    # keep only distances (a few numbers per plan), never the sampled states: on trajectories the states of
+    # ~300 configurations x n_cal plans would take several GB of GPU memory
+    d_by_cfg = {}
     for ref_cfg in configs.values():
         for m, params in ref_cfg.items():
             for prm in params:
-                if (m, prm) not in samples_cal:
-                    samples_cal[(m, prm)] = run(m, prm, "cal")[0]
-    d_cal = {ref: {m: [task.dist(refs["cal"][ref], samples_cal[(m, prm)]).cpu() for prm in params]
-                   for m, params in ref_cfg.items()}
+                if (m, prm) not in d_by_cfg:
+                    x = run(m, prm, "cal")[0]
+                    d_by_cfg[(m, prm)] = {r: task.dist(refs["cal"][r], x).cpu() for r in ("exact", "euler")}
+                    del x
+    d_cal = {ref: {m: [d_by_cfg[(m, prm)][ref] for prm in params] for m, params in ref_cfg.items()}
              for ref, ref_cfg in configs.items()}
 
     test_cache = {}
 
     def evaluate(m, prm, ref, eta):
-        if (m, prm) not in test_cache:
-            test_cache[(m, prm)] = run(m, prm, "test")
-        x, nfe = test_cache[(m, prm)]
-        d = task.dist(refs["test"][ref], x)
+        if (m, prm) not in test_cache:  # cache distances to both references, not the sampled states
+            x, nfe_ = run(m, prm, "test")
+            test_cache[(m, prm)] = ({r: task.dist(refs["test"][r], x) for r in ("exact", "euler")}, nfe_)
+            del x
+        dd, nfe = test_cache[(m, prm)]
+        d = dd[ref]
         return {"nfe": nfe, "E_d": d.mean().item(), "p_viol": (d > eta).float().mean().item()}
 
     rows = []

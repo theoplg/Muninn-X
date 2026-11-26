@@ -9,7 +9,7 @@ Running log of experiments: setup, results and interpretation. `runs/` holds the
 
 ---
 
-## Key findings (as of 2026-11-25)
+## Key findings (as of 2026-11-26)
 
 1. **Muninn on velocity + Euler does not beat FewSteps.** At matched mean NFE, uniform Euler
    with fewer steps has a 5–15× smaller E[d] on both toys (E0, E1, E2).
@@ -83,6 +83,11 @@ Running log of experiments: setup, results and interpretation. `runs/` holds the
    elsewhere. The amplification $\lVert G\rVert$ itself is predictable (rank corr. 0.73–0.85 from free
    signals, 0.98–0.99 from probe features), but adding the probe never pays on the MLP: its cost
    (≈ 0.08 NFE per extrapolated step) exceeds the information it brings.
+
+16. **On a real conditional planner (Maze2D U-maze, temporal U-Net), certified AB2 still wins by 5–9×** (E18).
+   With the same end-to-end certification, Muninn needs 93–99 NFE where AB2 needs 10–19 ($\eta \ge 0.05$), and
+   Muninn cannot certify $\eta \le 0.02$ against the exact ODE at all (AB2: 81 NFE at $\eta = 0.005$). LTT stays
+   valid (worst test excess $+0.001$).
 
 **Implication.** (a) *Validity*: the sensitivity weights must account for the flow's
 amplification, or calibration must target the final d directly (CertFew already does).
@@ -764,6 +769,51 @@ cost predictor and of a dedicated $\lVert G\rVert$ predictor).
 
 ---
 
+### E18 — Certified Muninn vs certified FewSteps on a real planner: conditional U-maze (2026-11-26)
+```bash
+python scripts/certified_compare.py --ckpt runs/maze2d_umaze/maze_unet_cond/model.pt \
+    --n-fit 2000 --n-cal 4000 --n-test 20000 --etas 0.005 0.01 0.02 0.05 0.1 0.2 --alphas 0.05 0.1
+```
+**Question.** Does the E8 ranking (certified AB2 $\ll$ certified Euler $<$ certified Muninn) survive on a
+real diffusion-planner workload, the setting of the paper?
+
+**Setup.** Model `runs/maze2d_umaze/maze_unet_cond`: Diffuser-scale temporal U-Net, FM, horizon $H = 128$,
+6 channels $[x, y, v_x, v_y, a_x, a_y]$, conditioned on $c = (s_{\text{start}}, g)$ (global FiLM; warm-started
+from the unconditional v2, EMA 0.999). Plan quality on Euler-100: start error 0.017, goal error 0.020,
+0.9% of plans with a jump, 0.05% enter a wall. Each chain draws a random context from real data windows;
+the context is a frozen coordinate (zero velocity), and $d = \lVert \cdot \rVert_F / \sqrt{H}$ on the plan only.
+Same protocol as E8 (4000 calibration chains, 20000 test chains, $\delta = 0.05$).
+Probe (U-Net stem) cost: **0.023** forward passes ($+2.3$ NFE-equivalents per Muninn sample).
+
+**Validity.** LTT: 2 / 57 certified rows exceed $\alpha$ on test, by at most $+0.001$ (test standard error
+$\approx 0.0015$). Conformal: 18 / 57, by at most $+0.0065$ (marginal guarantee, as in E8).
+
+**Mean NFE for $P(d > \eta) \le 0.05$, LTT, reference = exact ODE (RK4-400)** (inf = not certifiable)
+
+| $\eta$ | Euler | **AB2** | Muninn | Muninn / AB2 |
+|---|---|---|---|---|
+| 0.005 | inf | **81** | inf | — |
+| 0.01 | inf | **50** | inf | — |
+| 0.02 | 240 | **30** | inf | — |
+| 0.05 | 95 | **19** | 99 | 5.2× |
+| 0.1 | 51 | **13** | 97 | 7.5× |
+| 0.2 | 24 | **10** | 93 | 9.3× |
+
+Against the Euler-100 reference (LTT, $\alpha = 0.05$): Euler 91 / 83 / 70 / 49 / 33 / 20, AB2 inf / inf / inf / 14 / 11 / 9,
+Muninn 99 / 98 / 98 / 97 / 95 / 93 for $\eta$ = 0.005 … 0.2. Even on its own target, Muninn saves at most 7 of 100 NFE.
+Plot: `runs/maze2d_umaze/maze_unet_cond/certified_compare/certified_nfe.png`.
+
+**Interpretation**
+- **The toy conclusion holds on a real planner, and the gap is about as large** (5–9× vs 6–14× on toys).
+  Certified AB2 is the cheapest method at every tolerance; certified Euler is second.
+- **Muninn barely caches.** The calibrated budget $\lambda$ allows only 1–7 skipped steps out of 100. Reusing the
+  velocity on an Euler grid is a first-order step of size $l h$, and the plan's error grows fast enough that the
+  certified tolerance is spent after a handful of skips.
+- **The accuracy floor is back.** Euler-100 is itself about 0.02 away from the exact plan, so Muninn (and Euler
+  with $N' \le 100$) cannot certify $\eta \le 0.02$ against the exact ODE; AB2 certifies $\eta = 0.005$ with 81 NFE.
+- **The cheap probe does not change anything.** The U-Net stem costs only 2.3% of a forward pass (vs 7.9% for the
+  toy MLP), but the deficit is in the NFE itself, not in the probe.
+
 ## Open questions
 - Can the amplification be bounded *with high probability* (conformal on G_k) rather than in the
   worst case? The tail (max ~900×) suggests a per-step worst-case Lipschitz bound would be useless.
@@ -810,3 +860,5 @@ cost predictor and of a dedicated $\lVert G\rVert$ predictor).
 - 2026-11-25 **GPU memory cap** (`cap_gpu_memory`, applied in `get_device`): a check script materialised ~14 GB on the
   12 GB GPU; under WSL the NVIDIA driver spilled it into system RAM instead of raising OOM and the PC crashed. The
   smoothness check is now streamed (constant memory) and every script runs under a 90% VRAM cap (clean OOM instead).
+- 2026-11-26 `certified_compare.py` stores only the distances of each configuration to both references, never the
+  sampled states (on 128-step plans ~300 configurations × 4000 chains reached the 90% VRAM cap). Toy results unchanged.
