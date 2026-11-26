@@ -32,6 +32,8 @@ def main():
     p.add_argument("--device", default="auto")
     p.add_argument("--no-compile", action="store_true")
     p.add_argument("--cond", action="store_true", help="Maze2D: condition on start state + goal position")
+    p.add_argument("--local-cond", action="store_true", help="also feed the condition as input channels at steps 0 / H-1")
+    p.add_argument("--channels", type=int, default=None, help="maze_unet base channels (default 32)")
     p.add_argument("--init", default=None, help="warm-start from this checkpoint (missing layers keep their init)")
     p.add_argument("--save-every", type=int, default=0, help="also save model_it<step>.pt every N steps")
     p.add_argument("--ema", type=float, default=0.0, help="EMA decay of the saved weights (0 = no EMA; Diffuser uses ~0.995-0.999)")
@@ -58,6 +60,10 @@ def main():
             model_cfg["t_scale"] = args.t_scale
         if args.cond:
             model_cfg["cond_dim"] = CONTEXT_DIM
+        if args.local_cond:
+            model_cfg["local_cond"] = True
+        if args.channels:
+            model_cfg["c"] = args.channels
     model = ARCHS[args.arch](**model_cfg).to(device)
     if args.init:
         res = model.load_state_dict(torch.load(args.init, map_location=device)["state_dict"], strict=False)

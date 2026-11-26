@@ -15,6 +15,7 @@ import torch
 
 DATASETS = {"umaze": "D4RL/pointmaze/umaze-v2", "medium": "D4RL/pointmaze/medium-v2", "large": "D4RL/pointmaze/large-v2"}
 HORIZONS = {"umaze": 128, "medium": 256, "large": 384}  # Diffuser's maze2d horizons
+RESET_JUMP = 0.15  # a step longer than this is a reset of the robot, not motion (data max motion step ~0.06)
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "data" / "minari"
 
 
@@ -56,6 +57,14 @@ class Maze2DWindows:
         self.data = self.normalize(stream).to(device)
         self.lo, self.hi = self.lo.to(device), self.hi.to(device)
         self.T, self.dim = self.data.shape
+        # The stitched stream contains rare resets (position jumps, ~0.1% of windows): only use windows that do
+        # not straddle one. A window starting at s uses transitions s .. s+H-2.
+        step = (stream[1:, :2] - stream[:-1, :2]).norm(dim=1)
+        bad = torch.cat([torch.zeros(1), (step > RESET_JUMP).float().cumsum(0)])  # bad[i] = resets before index i
+        starts = torch.arange(self.T - self.H + 1)
+        ok = bad[starts + self.H - 1] - bad[starts] == 0
+        self.starts = starts[ok].to(device)
+        self.n_resets = int((step > RESET_JUMP).sum())
 
     def normalize(self, x):
         return 2 * (x - self.lo) / (self.hi - self.lo) - 1
@@ -64,7 +73,7 @@ class Maze2DWindows:
         return (x + 1) / 2 * (self.hi - self.lo) + self.lo
 
     def sample(self, n, generator=None):
-        start = torch.randint(0, self.T - self.H + 1, (n,), device=self.data.device, generator=generator)
+        start = self.starts[torch.randint(0, len(self.starts), (n,), device=self.data.device, generator=generator)]
         idx = start[:, None] + torch.arange(self.H, device=self.data.device)[None]
         return self.data[idx]  # (n, H, 6)
 

@@ -176,17 +176,20 @@ class MazeUNet(TrajBackbone):
     core = all down / mid / up levels, decode = last block (with the full-resolution skip) + output conv.
     Like Diffuser it has two mid blocks at the deepest level (TrajUNet has one), so it is not TrajUNet's topology."""
 
-    def __init__(self, H=128, dim=6, c=32, mults=(1, 2, 4, 8), t_dim=128, t_scale=1000.0, cond_dim=0):
+    def __init__(self, H=128, dim=6, c=32, mults=(1, 2, 4, 8), t_dim=128, t_scale=1000.0, cond_dim=0,
+                 local_cond=False):
         super().__init__()
         assert H % 2 ** (len(mults) - 1) == 0, "H must be divisible by 2^(levels-1)"
-        self.H, self.dim, self.cond_dim = H, dim, cond_dim
+        self.H, self.dim, self.cond_dim, self.local_cond = H, dim, cond_dim, local_cond
         ch = [c * m for m in mults]
         self.time = TimeMLP(t_dim, t_scale)
         if cond_dim:  # condition (e.g. start state + goal) added to the time embedding; zero-init = no effect at start
             self.cond = nn.Sequential(nn.Linear(cond_dim, t_dim), nn.SiLU(), nn.Linear(t_dim, t_dim))
             nn.init.zeros_(self.cond[-1].weight)
             nn.init.zeros_(self.cond[-1].bias)
-        self.inp = nn.Conv1d(dim, ch[0], 5, padding=2)
+        # local conditioning: the condition is also written as input channels at the time steps it describes
+        # (start state at step 0, goal position at step H-1) + a mask of the pinned entries (2 * dim channels)
+        self.inp = nn.Conv1d(dim * (3 if local_cond else 1), ch[0], 5, padding=2)
         self.enc = FiLMResBlock1d(ch[0], ch[0], t_dim)
         self.downs = nn.ModuleList([nn.Conv1d(ch[i - 1], ch[i], 3, stride=2, padding=1) for i in range(1, len(ch))])
         self.down_blocks = nn.ModuleList([FiLMResBlock1d(ch[i], ch[i], t_dim) for i in range(1, len(ch))])
@@ -200,7 +203,18 @@ class MazeUNet(TrajBackbone):
         temb = self.time(as_batch_time(t, x.shape[0], x.device))
         if self.cond_dim:
             temb = temb + self.cond(c)
-        return self.enc(self.inp(x.transpose(1, 2)), temb), temb
+        z = x.transpose(1, 2)
+        if self.local_cond:
+            z = torch.cat([z, self.cond_maps(c, x.shape[0], x.device, x.dtype)], dim=1)
+        return self.enc(self.inp(z), temb), temb
+
+    def cond_maps(self, c, B, device, dtype):
+        """(B, 2*dim, H) value + mask channels for the Maze2D context c = (start x, y, vx, vy, goal x, y)."""
+        val = torch.zeros(B, self.dim, self.H, device=device, dtype=dtype)
+        mask = torch.zeros_like(val)
+        val[:, :4, 0], mask[:, :4, 0] = c[:, :4], 1.0
+        val[:, :2, -1], mask[:, :2, -1] = c[:, 4:6], 1.0
+        return torch.cat([val, mask], dim=1)
 
     def core(self, h, temb):
         z, skips = h, []

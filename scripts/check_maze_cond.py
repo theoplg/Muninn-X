@@ -1,4 +1,4 @@
-"""Quality check of start/goal-conditioned Maze2D planners (U-maze).
+"""Quality check of start/goal-conditioned Maze2D planners (any maze: read from the checkpoint).
 
     python scripts/check_maze_cond.py runs/maze2d_umaze/maze_unet_cond/model_it10000.pt ... [--inpaint-baseline v2.pt]
 
@@ -21,19 +21,15 @@ import torch
 from muninnx.baselines.fewsteps import sample_ab2, sample_rk4
 from muninnx.conditioning import Inpaint, InpaintSolver, maze_condition_indices
 from muninnx.data.maze2d import Maze2DWindows, window_context
+from muninnx.data.maze_maps import MAPS, wall_grid, wall_rate as map_wall_rate
 from muninnx.sampling import sample_full
 from muninnx.solvers.euler import EulerSolver
 from muninnx.tasks import load_task
 from muninnx.utils.misc import get_device, save_json, seed_all
 
 
-def wall_rate(p):
-    inside = (p[..., 1].abs() < 0.4) & (p[..., 0] < 0.4)
-    return (inside | (p.abs() > 1.45).any(-1)).any(1).float().mean().item()
-
-
 @torch.no_grad()
-def evaluate(task, ds, ctx, n, inpaint=False):
+def evaluate(task, ds, ctx, n, grid, inpaint=False):
     m = task.model
     g = torch.Generator(device=ctx.device).manual_seed(7)
     Dx = m.H * m.dim
@@ -59,7 +55,7 @@ def evaluate(task, ds, ctx, n, inpaint=False):
         "start_err": (plan[:, 0, :2] - want[:, 0, :2]).norm(dim=-1).mean().item(),
         "goal_err": (plan[:, -1, :2] - goal).norm(dim=-1).mean().item(),
         "jump_frac": (step > 0.15).any(1).float().mean().item(),
-        "walls": wall_rate(plan[..., :2]),
+        "walls": map_wall_rate(plan, grid),
         "euler100_vs_exact": task.dist(eul, ref).mean().item(),
         "ab2_p95": {k: task.dist(ab2(k), ref).quantile(0.95).item() for k in (20, 40, 80)},
     }
@@ -73,13 +69,17 @@ def main():
     args = p.parse_args()
     seed_all(0)
     dev = get_device()
-    ds = Maze2DWindows("umaze", device=dev)
+    maze = torch.load(args.ckpts[0], map_location="cpu")["cfg"]["dataset"].split("-")[1]
+    H = torch.load(args.ckpts[0], map_location="cpu")["cfg"]["model"]["H"]
+    ds = Maze2DWindows(maze, H=H, device=dev)
+    grid = wall_grid(maze, dev)
+    print(f"maze: {maze} (H = {H})")
     ctx = window_context(ds.sample(args.n, generator=torch.Generator(device=dev).manual_seed(3)))
     rows, plans = {}, {}
     todo = ([("v2 + inpainting", args.inpaint_baseline, True)] if args.inpaint_baseline else []) + \
            [(Path(c).stem, c, False) for c in args.ckpts]
     for name, ckpt, inp in todo:
-        plan, r = evaluate(load_task(ckpt, dev), ds, ctx, args.n, inpaint=inp)
+        plan, r = evaluate(load_task(ckpt, dev), ds, ctx, args.n, grid, inpaint=inp)
         rows[name], plans[name] = r, plan
         print(f"{name:16s} | start err {r['start_err']:.3f} | goal err {r['goal_err']:.3f} | plans with a jump "
               f"{r['jump_frac']:.3f} | walls {r['walls']:.4f} | E[d(Euler-100, exact)] {r['euler100_vs_exact']:.4f} | "
@@ -89,23 +89,26 @@ def main():
     print(f"peak GPU memory {torch.cuda.max_memory_allocated() / 1e9:.1f} GB")
 
     show = [k for k in rows if k.startswith("v2")] + [list(rows)[-1]]
-    fig, axes = plt.subplots(1, len(show), figsize=(5.2 * len(show), 5.2))
+    fig, axes = plt.subplots(1, len(show), figsize=(6.2 * len(show), 5.4))
     axes = axes if len(show) > 1 else [axes]
     for a, name in zip(axes, show):
         pl = plans[name][:20].cpu()
-        a.add_patch(plt.Rectangle((-1.5, -0.5), 2.0, 1.0, color="#888888", alpha=0.5))
-        a.add_patch(plt.Rectangle((-1.5, -1.5), 3, 3, fill=False, ec="#888888", lw=2))
+        Hc, Wc = len(MAPS[maze]), len(MAPS[maze][0])
+        for i, row in enumerate(MAPS[maze]):
+            for j, ch in enumerate(row):
+                if ch == "#":
+                    a.add_patch(plt.Rectangle((j - Wc / 2, Hc / 2 - i - 1), 1, 1, color="#888888", alpha=0.5, lw=0))
         for tr in pl:
             a.plot(tr[:, 0], tr[:, 1], lw=1, alpha=0.8, color="#2a78d6")
         s = ds.unnormalize(torch.cat([ctx[:20, :4], torch.zeros(20, 2, device=dev)], 1)).cpu()
         gl = ds.unnormalize(torch.cat([ctx[:20, 4:6], torch.zeros(20, 4, device=dev)], 1)).cpu()
         a.scatter(s[:, 0], s[:, 1], s=16, color="#1baf7a", zorder=3, label="requested start")
         a.scatter(gl[:, 0], gl[:, 1], s=30, marker="*", color="#eb6834", zorder=3, label="requested goal")
-        a.set_aspect("equal"); a.set_xlim(-1.7, 1.7); a.set_ylim(-1.7, 1.7); a.set_title(name, fontsize=10)
-        a.legend(frameon=False, fontsize=7, loc="center")
+        a.set_aspect("equal"); a.set_xlim(-Wc / 2, Wc / 2); a.set_ylim(-Hc / 2, Hc / 2); a.set_title(name, fontsize=10)
+        a.legend(frameon=False, fontsize=7, loc="lower left")
         for sp in ("top", "right"):
             a.spines[sp].set_visible(False)
-    fig.suptitle("U-maze: plans for a requested start and goal (Euler-100)", fontsize=11)
+    fig.suptitle(f"{maze}: plans for a requested start and goal (Euler-100); grey = walls", fontsize=11)
     fig.tight_layout()
     fig.savefig(out / "conditioned_compare.png", dpi=110)
 
