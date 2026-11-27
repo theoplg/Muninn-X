@@ -9,7 +9,7 @@ Running log of experiments: setup, results and interpretation. `runs/` holds the
 
 ---
 
-## Key findings (as of 2026-11-26)
+## Key findings (as of 2026-11-27)
 
 1. **Muninn on velocity + Euler does not beat FewSteps.** At matched mean NFE, uniform Euler
    with fewer steps has a 5–15× smaller E[d] on both toys (E0, E1, E2).
@@ -88,6 +88,12 @@ Running log of experiments: setup, results and interpretation. `runs/` holds the
    With the same end-to-end certification, Muninn needs 93–99 NFE where AB2 needs 10–19 ($\eta \ge 0.05$), and
    Muninn cannot certify $\eta \le 0.02$ against the exact ODE at all (AB2: 81 NFE at $\eta = 0.005$). LTT stays
    valid (worst test excess $+0.001$).
+
+17. **A realistic adaptive policy wins 1.2–1.3× on the real planner, only at tight tolerances** (E19). The E10
+   policy ($G$-aware extrapolation on AB2, free signals, certified end-to-end) beats certified AB2 by 1.24–1.34× at
+   $\eta = 0.01$ and 1.17–1.57× at $\eta = 0.005$ (3 seeds), ties or loses for $\eta \ge 0.05$. Without $G$-awareness
+   it loses; Muninn's probe adds nothing. The amplification is heterogeneous (max $10^3$) but hard to predict
+   (Spearman 0.53 from free signals).
 
 **Implication.** (a) *Validity*: the sensitivity weights must account for the flow's
 amplification, or calibration must target the final d directly (CertFew already does).
@@ -814,6 +820,67 @@ Plot: `runs/maze2d_umaze/maze_unet_cond/certified_compare/certified_nfe.png`.
 - **The cheap probe does not change anything.** The U-Net stem costs only 2.3% of a forward pass (vs 7.9% for the
   toy MLP), but the deficit is in the NFE itself, not in the probe.
 
+### E19 — The learned $G$-aware extrapolation policy (E10) on the conditional U-maze (2026-11-27)
+```bash
+python scripts/e19_policy_maze.py --ckpt runs/maze2d_umaze/maze_unet_cond/model.pt --seed {0,1,2}   # n_fit 2000, n_cal 4000, n_test 20000
+```
+**Question.** E18 tested the paper's Muninn. Does the best *realistic* adaptive policy from the toys (E10:
+extrapolate-or-compute on an AB2 base, decided by a regressor that predicts the $G$-weighted cost) beat certified
+AB2 on a real planner?
+
+**Method.** Same pipeline as E10, through the task layer (same model and context distribution as E18).
+- **Training targets.** "Ghost" chains with random decisions ($p_{\text{extrap}} = 0.7$, lag $\le 10$) on 2000
+  separate plans give 196k rows with the true extrapolation error $e_k$ and the cost
+  $c_k = h\lVert G_{k+1\to N}\, e_k\rVert$, where $G_{k+1\to N} = \prod_{j>k} (I + h J_j)$ along the AB2-100 chain.
+  The state has $D = 774$ dims, so $G$ is never formed: each $e_k$ is pushed through the remaining steps by
+  Jacobian-vector products (central finite differences, step 0.01, full fp32). Checked against exact flow
+  Jacobians on the 2D toy (max rel. error $4\times10^{-4}$ with step $10^{-3}$) and against `torch.func.jvp` on the maze ($< 0.2\%$).
+- **Policies.** Extrapolate iff predicted cost $\le \tau$. Regressors on: free signals; + Muninn's probe score;
+  + the probe features (32-d pooled U-Net stem). Ablation: the same free-signal regressor trained on the
+  plain cost $h\lVert e_k\rVert$ (not $G$-aware).
+- **Certification.** $\tau$ (31 values) and AB2's $N'$ selected by Bonferroni LTT ($\alpha = \delta = 0.05$)
+  against the exact ODE (RK4-400) on 4000 calibration plans; evaluated on 20000 test plans. Cost = NFE, plus the
+  probe (0.023 forward) per extrapolated step for the probe tiers.
+- The E9 $G$-aware **oracle is not run**: it needs $O(N)$ JVPs per decision (about 100× the cost of a run).
+
+**Validity.** 90 / 90 certified rows (3 seeds) have $\hat p_{\text{viol}} \le 0.048$ on test.
+
+**Prediction quality** (held-out Spearman, 3 seeds within $\pm 0.01$): cost predictor vs true cost 0.83 (free),
+0.83 (+ probe score), 0.84 (+ probe features). Dedicated predictor of the amplification
+$\lVert G e\rVert / \lVert e\rVert$: 0.53 (free), 0.53, 0.65 (probe features), vs 0.73–0.85 / 0.98–0.99 on the
+toys. The amplification is very heterogeneous: median 0.99, p99 15–18, max 400–1400. The true cost ranks with
+the raw error at 0.83 and with the amplification at 0.50.
+
+**Mean cost for $P(d > \eta) \le 0.05$** (seeds 0 / 1 / 2; reference = exact ODE)
+
+| $\eta$ | certified AB2 | **$G$-aware, free** | + probe score | + probe features | not $G$-aware | free / AB2 gain |
+|---|---|---|---|---|---|---|
+| 0.005 | 84 / 85 / 85 | **72 / 72 / 54** | 72 / 72 / 74 | 72 / 72 / 73 | 98 / 97 / 97 | 1.17–1.57× |
+| 0.01 | 50 / 54 / 51 | **40 / 40 / 41** | 41 / 42 / 42 | 42 / 42 / 43 | 47 / 47 / 47 | 1.24–1.34× |
+| 0.02 | 32 / 34 / 33 | **30 / 30 / 31** | 32 / 32 / 32 | 32 / 32 / 33 | 35 / 35 / 35 | 1.07–1.12× |
+| 0.05 | 20 / 21 / 21 | 18 / 23 / 23 | 20 / 25 / 20 | 20 / 25 / 25 | 27 / 27 / 27 | 0.90–1.10× |
+| 0.1 | 15 / 15 / 16 | 15 / 15 / 15 | 17 / 17 / 17 | 16 / 17 / 17 | 16 / 16 / 21 | 1.02–1.08× |
+| 0.2 | 10 / 11 / 12 | 11 / 11 / 11 | 13 / 13 / 13 | 14 / 14 / 14 | 12 / 12 / 14 | 0.89–1.07× |
+
+Plots: `runs/maze2d_umaze/maze_unet_cond/e19/seed*/e19.png`.
+
+**Interpretation**
+- **The toy result transfers almost exactly.** A realistic adaptive policy beats certified AB2 by
+  **1.2–1.3× at tight tolerances** ($\eta \le 0.01$; 1.57× once, seed 2 at $\eta = 0.005$), 1.1× at
+  $\eta = 0.02$, and ties or loses at loose tolerances, where AB2 already needs only 10–20 NFE (E10 on toys:
+  1.17–1.28×).
+- **$G$-awareness is necessary.** The same policy predicting the plain error $h\lVert e\rVert$ loses to AB2 at
+  most tolerances (97 vs 85 NFE at $\eta = 0.005$). With an amplification spanning three orders of magnitude, a
+  budget spent uniformly on raw error is wasted on errors the flow damps.
+- **The probe is useless here too.** It is cheap on the U-Net (2.3% of a forward) and its features predict the
+  amplification better (0.65 vs 0.53), but the policies using it are never better than free signals alone.
+  Muninn's central component, the probe-based change score, adds nothing to the decision on this planner.
+- **The policy keeps only two ideas from Muninn**: per-step decisions and a budget certified on the final
+  deviation. It replaces reuse by extrapolation, the probe by free signals, and the paper's weights by learned
+  $G$-weighted costs.
+- **What limits the gain.** The policy predicts the error well but the amplification poorly (Spearman 0.53),
+  and the amplification is half of what decides the true cost. A better $G$ predictor is the obvious lever.
+
 ## Open questions
 - Can the amplification be bounded *with high probability* (conformal on G_k) rather than in the
   worst case? The tail (max ~900×) suggests a per-step worst-case Lipschitz bound would be useless.
@@ -862,3 +929,7 @@ Plot: `runs/maze2d_umaze/maze_unet_cond/certified_compare/certified_nfe.png`.
   smoothness check is now streamed (constant memory) and every script runs under a 90% VRAM cap (clean OOM instead).
 - 2026-11-26 `certified_compare.py` stores only the distances of each configuration to both references, never the
   sampled states (on 128-step plans ~300 configurations × 4000 chains reached the 90% VRAM cap). Toy results unchanged.
+- 2026-11-27 `scripts/e19_policy_maze.py`: $G e$ by finite-difference JVP propagation (never forms $G$), full fp32.
+  cuDNN uses TF32 convolutions by default (~$10^{-3}$ relative noise on the U-Net velocity): E18 ran with them,
+  E19 turns them off (`torch.backends.cudnn.allow_tf32 = False`). The noise is below every certified tolerance
+  (E18 still certifies AB2 at $\eta = 0.005$), and both experiments compare all methods under the same setting.
