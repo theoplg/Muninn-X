@@ -1,6 +1,6 @@
 # A1 poster (landscape, 84.1 x 59.4 cm)
 
-- `poster.tex`: beamer + beamerposter, self-contained theme (no external .sty), Lato font, 3 columns.
+- `poster.tex`: beamer + beamerposter + tcolorbox, four asymmetric quadrants (Muninn | FM experiments | proposition | results), Lato font. Dashed boxes = figures still to produce.
 - `figures/*.pdf`: vector figures, regenerated from the results in `runs/` by
   `python scripts/poster_figures.py` (the maze and amplification panels need the GPU).
 - Build locally: `latexmk -pdf poster.tex`. On Overleaf: upload `poster.tex` + `figures/`, compiler pdfLaTeX.
