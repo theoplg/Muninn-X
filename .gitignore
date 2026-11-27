@@ -231,3 +231,13 @@ runs/**/*.ckpt
 # job logs and intermediate checkpoints (kept on disk, not tracked)
 logs/
 runs/**/model_it*.pt
+
+# poster build files
+poster/*.aux
+poster/*.fdb_latexmk
+poster/*.fls
+poster/*.log
+poster/*.nav
+poster/*.out
+poster/*.snm
+poster/*.toc
