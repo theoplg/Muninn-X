@@ -256,12 +256,12 @@ $\hat u_k=u_b+\frac{t_k-t_b}{t_b-t_a}(u_b-u_a)$ from the last two computed veloc
 $\sum_kc_k\le B$ has the Lagrangian $\sum_k\mathbf{1}[\mathrm{compute}_k]+\mu\,c_k\mathbf{1}[\mathrm{extrap}_k]$,
 minimised step by step by $c_k\le1/\mu=\tau$. Muninn's first-come budget needed 3--8$\times$ more NFE (oracle study).
 
-\begin{minipage}[t]{0.44\linewidth}\vspace{0.2cm}\centering
+\begin{minipage}[t]{0.44\linewidth}\vspace{0.1cm}\centering
 \resizebox{\linewidth}{!}{%
-\begin{tikzpicture}[x=1cm, y=1.7cm, every node/.style={font=\sffamily\large}]
+\begin{tikzpicture}[x=1cm, y=1.25cm, every node/.style={font=\sffamily\large}]
   \draw[-{Stealth}, line width=1.2pt, ink2] (0,0) -- (10.4,0) node[below left] {$t$};
   \draw[-{Stealth}, line width=1.2pt, ink2] (0,0) -- (0,4.3);
-  \node[rotate=90, anchor=south, text=ink2] at (-0.15,2.15) {velocity (one coordinate)};
+  \node[rotate=90, anchor=south, text=ink2] at (-0.15,2.15) {velocity};
   \draw[line width=2.4pt, ink, domain=0.5:9.4, samples=60] plot (\x, {0.6+0.42*\x-0.01*\x*\x});
   \draw[dashed, line width=2pt, aqua] (5.5,2.6075) -- (8,2.6075);
   \draw[dashed, line width=2pt, orange] (4,2.12) -- (8,3.42);
@@ -273,7 +273,7 @@ minimised step by step by $c_k\le1/\mu=\tau$. Muninn's first-come budget needed 
   \draw[aqua, line width=2.4pt, fill=white] (8,2.6075) circle (0.16);
   \draw[orange, line width=2.4pt, fill=white] (8,3.42) circle (0.16);
   \draw[decorate, decoration={brace, amplitude=6pt, mirror}, line width=1.6pt, aqua] (8.35,2.62) -- (8.35,3.28)
-     node[midway, right=8pt, text=aqua, align=left] {reuse\\error};
+     node[midway, right=8pt, yshift=-0.2cm, text=aqua, align=left] {reuse\\error};
   \draw[line width=1.2pt, orange] (7.8,3.45) -- (7.0,3.95) node[left, text=orange] {extrapolation error};
   \node[anchor=south west, text=ink2, font=\sffamily\normalsize] at (0.3,0.12) {$\bullet$ computed\quad $\circ$ predicted};
 \end{tikzpicture}}
@@ -301,7 +301,7 @@ signals ($t$, lag, $\lVert u\rVert$, rates of change of $u$ and of the endpoint 
 Muninn's probe: 196\,000 rows from 2000 ghost chains, targets $G_{k+1\to N}e_k$ by finite-difference
 Jacobian--vector products (within 0.2\% of autodiff).
 
-\quadrule
+\vfill\quadrule
 % ------------------------------------------------------------------------------------- 4  Results (BR)
 \psection{4}{Results on a Maze2D planner}
 \begin{minipage}[t]{0.47\linewidth}\vspace{0pt}
@@ -321,7 +321,7 @@ with NFE and $d$.}{new script sampling each certified setting (\texttt{certified
 on 3--4 contexts; save or retrain the E19 regressor first.}
 \end{minipage}
 
-\vskip0cm
+\vskip0.1cm
 \begin{minipage}[t]{0.49\linewidth}\vspace{0pt}\centering
 \includegraphics[width=\linewidth]{figures/fig_e18.pdf}\\[-0.05cm]{\small(a) Muninn vs FewSteps}
 \end{minipage}\hfill
@@ -331,7 +331,7 @@ on 3--4 contexts; save or retrain the E19 regressor first.}
 \figcap{NFE needed for the same certified guarantee $\mathbb{P}[d>\eta]\le0.05$. (a) $\times$: no setting
 certifies. (b) Mean of 3 seeds, band = min--max; labels: speed-up over AB2.}
 
-\vskip0.02cm
+\vskip0.15cm
 \begin{minipage}[t]{0.55\linewidth}\vspace{0pt}
 \tabcap{Certified NFE per plan, U-maze.}
 \centering\small
@@ -368,7 +368,7 @@ probe helps & no & no & no\\
 {\footnotesize\raggedright $^{a}$NFE ratio at $\eta=0.1$. $^{b}$Over certified AB2, best $\eta$.\par}
 \end{minipage}
 
-\vskip0.1cm
+\vfill\vskip0.25cm
 \begin{tcolorbox}[enhanced, colback=white, colframe=navy, boxrule=1.5pt, arc=0pt, left=0.35cm, right=0.35cm,
   top=0.06cm, bottom=0.06cm, title={\sffamily\bfseries Conclusions}, colbacktitle=navy, coltitle=white,
   toptitle=0.04cm, bottomtitle=0.04cm]
