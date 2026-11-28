@@ -187,11 +187,12 @@ The valid weight is $L_k=h\lVert M_{k+1\to N}\rVert$.
 \includegraphics[width=\linewidth]{figures/fig_gnorm.pdf}\\[-0.05cm]{\small(a)}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.49\linewidth}\vspace{0pt}\centering
-\includegraphics[width=\linewidth]{figures/fig_amplification.pdf}\\[-0.05cm]{\small(b)}
+\includegraphics[width=\linewidth]{figures/fig_ridge_half.pdf}\\[-0.05cm]{\small(b)}
 \end{minipage}
-\figcap{(a) Amplification $\lVert G_{k+1\to N}\rVert$ of an error made at step $k$: median $\approx2$,
-99th percentile 20--45 early in the chain (maximum $\approx10^3$), where Eq.~(1) assumes 1.
-(b) Checkerboard, error made at $t=0.2$: amplified 10--30$\times$ near the boundaries between cells.}\label{fig:amp}
+\figcap{(a) $\lVert G_{k+1\to N}\rVert$ for an error made at step $k$: median $\approx2$, 99th percentile
+20--45 early on; Eq.~(1) assumes 1. (b) Each sample is a single point of the plane; grey squares: where the data
+lie; navy: one sample from $x_k$ ($t_k=0.2$) to $x_N$. The same error $h\,e_k$ (orange, enlarged) leaves a
+sample in a valley unchanged and splits a sample on a ridge between two squares.}\label{fig:amp}
 
 \vskip0.12cm
 \begin{minipage}[t]{0.5\linewidth}\vspace{0pt}
@@ -209,8 +210,8 @@ Errors grow where the endpoint is still uncertain: on the boundaries between mod
 \end{minipage}
 
 \vskip0.15cm
-\tabcap{Samples for which the certificate holds (oracle with exact errors, $\eta\in[0.05,1]$). DDPM weights
-$K_t=1/\sqrt{\alpha_t}>1$ over-count typical propagation 5--25$\times$, which hides most failures.}\label{tab:valid}
+\tabcap{Samples for which the certificate holds (oracle, exact errors). DDPM weights $K_t=1/\sqrt{\alpha_t}>1$
+over-count propagation 5--25$\times$, hiding most failures.}\label{tab:valid}
 \centering
 \begin{tabular}{l c c}
 \toprule
